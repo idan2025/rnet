@@ -34,6 +34,27 @@ intermittent connections, and sleeping nodes.
 
 ---
 
+## Download the prebuilt app (no Python needed)
+
+Don't want to install Python or compile anything? Grab the ready-made app from
+the [Releases page](https://github.com/idan2025/rnet/releases):
+
+1. Go to **[github.com/idan2025/rnet/releases](https://github.com/idan2025/rnet/releases)**.
+2. Download the one file for your OS:
+   - **Windows:** `rnet-gui-windows-x86_64.exe` — double-click to run.
+   - **macOS (Apple Silicon):** `rnet-gui-macos-arm64` — in Terminal run
+     `xattr -dr com.apple.quarantine rnet-gui-macos-arm64` then `./rnet-gui-macos-arm64`.
+   - **Linux:** `rnet-gui-linux-x86_64` — `chmod +x rnet-gui-linux-x86_64 && ./rnet-gui-linux-x86_64`.
+3. Open the app, go to the **Node** tab, click **Start node**. That's it.
+
+> **Windows SmartScreen / Defender** may warn because the binary is unsigned.
+> Click **More info → Run anyway**. macOS: the `xattr` command above removes
+> the Gatekeeper quarantine flag.
+>
+> Prefer the command line or want the latest unreleased build? Keep reading.
+
+---
+
 ## What you can do with RNet
 
 | You want to… | Use |
@@ -551,3 +572,17 @@ the Reticulum project.
 Contributions welcome. RNet is modular by design — each subsystem
 (`rnet.storage`, `rnet.web`, `rnet.social`, …) is independently useful and
 testable. Open issues or pull requests on GitHub.
+
+### Cutting a release (maintainers)
+
+Push a tag — GitHub Actions builds Windows, macOS, and Linux binaries with
+PyInstaller and publishes them to the Releases page automatically:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow (`.github/workflows/release.yml`) builds a one-file executable per
+OS and attaches it to the release. Manual runs (`workflow_dispatch`) build all
+three without publishing — useful for testing the build before tagging.

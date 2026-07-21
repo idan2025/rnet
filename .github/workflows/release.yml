@@ -1,0 +1,157 @@
+name: Build & release GUI
+
+# Builds the RNet GUI into a standalone one-file executable with PyInstaller
+# for Windows, macOS, and Linux, then publishes a downloadable GitHub Release
+# when a tag (v*) is pushed. Non-technical users download the single file for
+# their OS and run it — no Python, no compilation.
+#
+# Manual run (workflow_dispatch) builds all three but does NOT publish a
+# release; artifacts are downloadable from the Actions run for testing.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_override:
+        description: "Tag name to label a draft release (workflow_dispatch only)"
+        required: false
+
+permissions:
+  contents: write   # needed to create a release + upload assets
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-22.04
+            asset_name: rnet-gui-linux-x86_64
+            archive: none
+          - os: windows
+            runner: windows-latest
+            asset_name: rnet-gui-windows-x86_64
+            archive: none
+          - os: macos
+            runner: macos-latest
+            asset_name: rnet-gui-macos-arm64
+            archive: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install RNet + GUI + build tools
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui]"
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --onefile --clean \
+            --name "${{ matrix.asset_name }}" \
+            --collect-all RNS \
+            --collect-all msgpack \
+            --collect-all cryptography \
+            --collect-all PySide6 \
+            --collect-submodules rnet \
+            --hidden-import rnet.gui.launch \
+            --hidden-import rnet.gui.controller \
+            --hidden-import rnet.gui.app \
+            rnet/gui/launch.py
+
+      - name: Locate artifact (Linux/macOS)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          ls -lh dist/
+          mv "dist/${{ matrix.asset_name }}" "dist/${{ matrix.asset_name }}_bin"
+          mkdir -p artifact
+          mv "dist/${{ matrix.asset_name }}_bin" "artifact/${{ matrix.asset_name }}"
+          chmod +x "artifact/${{ matrix.asset_name }}"
+
+      - name: Locate artifact (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          ls -lh dist/
+          mkdir -p artifact
+          mv "dist/${{ matrix.asset_name }}.exe" "artifact/${{ matrix.asset_name }}.exe"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Inspect assets
+        run: ls -lh release-assets/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: RNet ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/rnet-gui-linux-x86_64
+            release-assets/rnet-gui-windows-x86_64.exe
+            release-assets/rnet-gui-macos-arm64
+          body: |
+            # RNet ${{ github.ref_name }}
+
+            Download the **one file for your OS** and run it — no Python or
+            installation required.
+
+            | File | OS | Architecture |
+            |---|---|---|
+            | `rnet-gui-linux-x86_64` | Linux | x86_64 |
+            | `rnet-gui-windows-x86_64.exe` | Windows | x86_64 |
+            | `rnet-gui-macos-arm64` | macOS | Apple Silicon (arm64) |
+
+            ## First run
+            1. **Linux:** `chmod +x rnet-gui-linux-x86_64 && ./rnet-gui-linux-x86_64`
+            2. **Windows:** double-click `rnet-gui-windows-x86_64.exe`.
+               - Windows Defender may flag the unsigned executable. If so, click
+                 "More info" → "Run anyway". To avoid this, build from source
+                 or run from a terminal.
+            3. **macOS:** `xattr -dr com.apple.quarantine rnet-gui-macos-arm64`
+               then `./rnet-gui-macos-arm64` (the binary is unsigned).
+
+            The app stores its data in `~/.rnet` (or `%USERPROFILE%\.rnet` on
+            Windows). Start the node on the **Node** tab. See
+            [docs/USAGE.md](https://github.com/idan2025/rnet/blob/main/docs/USAGE.md)
+            for the full guide.
