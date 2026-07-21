@@ -3,6 +3,28 @@
 How to install and use RNet, phase by phase. Commands assume the venv is
 activated (`.venv/bin/activate`) or you call the `rnet` script directly.
 
+## GUI dashboard (easiest)
+
+Skip the CLI and use the desktop app:
+
+```bash
+rnet gui        # or: rnet-gui
+```
+
+Tabs: **Node** (start/stop, identity, capabilities, low-power, bandwidth, log),
+**Identities** (create/list), **Messages** (send DM, inbox, live incoming),
+**Peers** (discovered nodes + services), **Hosting** (pick a dir, host it),
+**Files** (share/get content-addressed files), **Browser** (browse `.rns`
+sites with verified/unverified indicator), **Social** (post/follow/feed),
+**Forum** (threads), **Explorer** (network map).
+
+The GUI runs the node **in-process** (RNS in the same app, on a background
+asyncio thread) — no separate `rnet node start` needed. Start the node on the
+Node tab; the other tabs enable once it's running. Headless? set
+`QT_QPA_PLATFORM=offscreen`.
+
+---
+
 ## Install
 
 ```bash

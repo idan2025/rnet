@@ -28,6 +28,7 @@ test = ["pytest>=7", "pytest-asyncio>=0.21"]
 
 [project.scripts]
 rnet = "rnet.cli:main"
+rnet-gui = "rnet.gui.launch:main"
 
 [tool.setuptools.packages.find]
 include = ["rnet*"]

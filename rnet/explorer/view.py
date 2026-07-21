@@ -1,8 +1,9 @@
 """PySide6 network explorer view. Imports Qt lazily.
 
-Draws known peers as nodes around the local node, colored by capability and
-sized by recency; reachable vs unreachable distinguished by outline style.
-RTT (when known) labels the edge. A side table lists services.
+:func:`ExplorerWidget` is an embeddable QWidget (used by the dashboard and by
+:func:`launch_explorer`). Draws known peers as nodes around the local node,
+colored by capability, sized by recency; reachable vs unreachable by outline;
+RTT labels edges. A side table lists services. Polls the model on a timer.
 """
 from __future__ import annotations
 
@@ -24,42 +25,54 @@ _CAP_COLORS = {
 }
 
 
-def launch_explorer(model: ExplorerModel) -> int:
+def _import_qt():
     from PySide6 import QtWidgets, QtCore, QtGui
+    return QtWidgets, QtCore, QtGui
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    win = QtWidgets.QMainWindow()
-    win.setWindowTitle("RNet Network Explorer")
-    win.resize(900, 640)
 
-    central = QtWidgets.QWidget()
-    win.setCentralWidget(central)
-    layout = QtWidgets.QHBoxLayout(central)
+class ExplorerWidget:
+    """Embeddable network explorer widget."""
 
-    scene = QtWidgets.QGraphicsScene()
-    view = QtWidgets.QGraphicsView(scene)
-    view.setRenderHint(QtGui.QPainter.Antialiasing)
-    layout.addWidget(view, 2)
+    def __init__(self, model: ExplorerModel, refresh_ms: int = 3000):
+        self.model = model
+        QtWidgets, QtCore, QtGui = _import_qt()
+        self.QtWidgets = QtWidgets
+        self.QtCore = QtCore
 
-    side = QtWidgets.QVBoxLayout()
-    summary = QtWidgets.QLabel("loading…")
-    summary.setWordWrap(True)
-    side.addWidget(summary)
+        self.widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(self.widget)
+        self.widget.setLayout(layout)
 
-    table = QtWidgets.QTableWidget(0, 4)
-    table.setHorizontalHeaderLabels(["capability", "node", "reachable", "rtt(ms)"])
-    side.addWidget(table, 1)
-    layout.addLayout(side, 1)
+        self.scene = QtWidgets.QGraphicsScene()
+        self.view = QtWidgets.QGraphicsView(self.scene)
+        self.view.setRenderHint(QtGui.QPainter.Antialiasing)
+        layout.addWidget(self.view, 2)
 
-    def refresh():
-        s = model.summary()
-        scene.clear()
+        side = QtWidgets.QVBoxLayout()
+        self.summary = QtWidgets.QLabel("loading…")
+        self.summary.setWordWrap(True)
+        side.addWidget(self.summary)
+
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["capability", "node", "reachable", "rtt(ms)"])
+        side.addWidget(self.table, 1)
+        layout.addLayout(side, 1)
+
+        self._refresh()
+        self._timer = QtCore.QTimer()
+        self._timer.timeout.connect(self._refresh)
+        self._timer.start(refresh_ms)
+
+    def _refresh(self) -> None:
+        s = self.model.summary()
+        self.scene.clear()
         cx, cy = 400.0, 300.0
-        # local node at center
-        local = scene.addEllipse(cx - 14, cy - 14, 28, 28,
-                                 QtGui.QPen(QtGui.QColor("#000"), 2),
-                                 QtGui.QBrush(QtGui.QColor("#111")))
-        scene.addText("you").setPos(cx - 10, cy + 16)
+        QtGui = self.QtWidgets  # alias module access
+        from PySide6 import QtGui as QG
+        local = self.scene.addEllipse(cx - 14, cy - 14, 28, 28,
+                                      QG.QPen(QG.QColor("#000"), 2),
+                                      QG.QBrush(QG.QColor("#111")))
+        self.scene.addText("you").setPos(cx - 10, cy + 16)
 
         peers = s["peers"]
         n = max(1, len(peers))
@@ -72,37 +85,44 @@ def launch_explorer(model: ExplorerModel) -> int:
                 if c in _CAP_COLORS:
                     color = _CAP_COLORS[c]
                     break
-            brush = QtGui.QBrush(QtGui.QColor(color))
-            pen = QtGui.QPen(QtGui.QColor("#0a0") if p["reachable"] else "#a00", 2)
+            brush = QG.QBrush(QG.QColor(color))
+            pen = QG.QPen(QG.QColor("#0a0") if p["reachable"] else "#a00", 2)
             r = 10 + min(10, max(0, 12 - p["age"] // 60))
-            scene.addLine(cx, cy, px, py,
-                          QtGui.QPen(QtGui.QColor("#ccc"), 1,
-                                     QtCore.Qt.DashLine if not p["reachable"] else QtCore.Qt.SolidLine))
-            scene.addEllipse(px - r, py - r, r * 2, r * 2, pen, brush)
-            label = scene.addText(p["name"] or p["dest_hash"][:8])
+            self.scene.addLine(cx, cy, px, py,
+                               QG.QPen(QG.QColor("#ccc"), 1,
+                                       self.QtCore.Qt.DashLine if not p["reachable"] else self.QtCore.Qt.SolidLine))
+            self.scene.addEllipse(px - r, py - r, r * 2, r * 2, pen, brush)
+            label = self.scene.addText(p["name"] or p["dest_hash"][:8])
             label.setPos(px - 20, py - 30)
             if p["rtt_ms"] is not None:
-                scene.addText(f"{p['rtt_ms']:.0f}ms").setPos((cx + px) / 2, (cy + py) / 2)
+                self.scene.addText(f"{p['rtt_ms']:.0f}ms").setPos((cx + px) / 2, (cy + py) / 2)
 
         cap_str = ", ".join(f"{k}={v}" for k, v in s["capabilities"].items()) or "-"
-        summary.setText(
+        self.summary.setText(
             f"nodes: {s['nodes']}  reachable: {s['reachable']}\ncapabilities: {cap_str}"
         )
-        services = model.services()
-        table.setRowCount(len(services))
+        services = self.model.services()
+        self.table.setRowCount(len(services))
+        QtWidgets = self.QtWidgets
         for row, sv in enumerate(services):
-            table.setItem(row, 0, QtWidgets.QTableWidgetItem(sv["cap"]))
-            table.setItem(row, 1, QtWidgets.QTableWidgetItem(sv["name"] or sv["dest"][:12]))
-            table.setItem(row, 2, QtWidgets.QTableWidgetItem("yes" if sv["reachable"] else "no"))
-            table.setItem(row, 3, QtWidgets.QTableWidgetItem(
+            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(sv["cap"]))
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(sv["name"] or sv["dest"][:12]))
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("yes" if sv["reachable"] else "no"))
+            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(
                 "" if sv["rtt_ms"] is None else f"{sv['rtt_ms']:.0f}"))
 
-    refresh()
+    def stop(self) -> None:
+        self._timer.stop()
 
-    # Refresh every few seconds.
-    timer = QtCore.QTimer()
-    timer.timeout.connect(refresh)
-    timer.start(3000)
 
+def launch_explorer(model: ExplorerModel) -> int:
+    """Run the explorer as a standalone window. Requires a display (or offscreen)."""
+    QtWidgets, QtCore, QtGui = _import_qt()
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    win = QtWidgets.QMainWindow()
+    win.setWindowTitle("RNet Network Explorer")
+    win.resize(900, 640)
+    ew = ExplorerWidget(model)
+    win.setCentralWidget(ew.widget)
     win.show()
     return app.exec()

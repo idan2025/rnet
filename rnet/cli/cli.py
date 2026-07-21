@@ -418,6 +418,17 @@ def cmd_crawl(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    """Launch the RNet GUI dashboard."""
+    from rnet.gui.launch import main as gui_main
+    try:
+        return gui_main()
+    except Exception as exc:
+        print(f"GUI failed (need a display, or set QT_QPA_PLATFORM=offscreen): {exc}",
+              file=sys.stderr)
+        return 1
+
+
 def cmd_explorer(args) -> int:
     """Print a network explorer summary (text mode)."""
     db = _db(args)
@@ -642,6 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
     ep = sub.add_parser("explorer", help="network explorer (peers/services)")
     ep.add_argument("--gui", action="store_true", help="launch the graphical view")
     ep.set_defaults(func=cmd_explorer)
+
+    # GUI dashboard (Phase 4+)
+    gp = sub.add_parser("gui", help="launch the RNet GUI dashboard")
+    gp.set_defaults(func=cmd_gui)
 
     # social (Phase 4)
     soc = sub.add_parser("social", help="social layer (posts/follows/feeds)")

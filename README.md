@@ -85,6 +85,37 @@ rnet --help
 
 ---
 
+## Use the GUI (easiest way to start)
+
+If you prefer a desktop app over the command line, launch the dashboard:
+
+```bash
+rnet gui        # or: rnet-gui
+```
+
+One window, a sidebar of tabs, handles everything:
+
+| Tab | What you do |
+|---|---|
+| **Node** | Start/stop your node, pick identity, capabilities, low-power, bandwidth; live log |
+| **Identities** | Create and list your identities |
+| **Messages** | Send encrypted DMs, read your inbox, see messages arrive live |
+| **Peers** | Watch discovered nodes + their services |
+| **Hosting** | Pick a directory and host it as a mesh website |
+| **Files** | Share a file (get its manifest hash) and fetch files by hash |
+| **Browser** | Browse `name.rns` sites, with verified/unverified indicator |
+| **Social** | Post, follow, read your feed |
+| **Forum** | Threaded discussions |
+| **Explorer** | Graphical map of the network |
+
+> **Headless / no display?** Set `QT_QPA_PLATFORM=offscreen` for import/CI
+> testing. The GUI needs a real desktop to render.
+
+Everything the GUI does, the CLI also does (`rnet --help`). They share the same
+data dir (`~/.rnet` by default, or `$RNET_DATADIR`).
+
+---
+
 ## Your first 10 minutes
 
 This walkthrough runs **two nodes on one computer** so you can see RNet work
@@ -479,6 +510,7 @@ rnet/
   explorer/    network explorer
   social/      posts, follows, feeds
   apps/        app SDK + reference forum app
+  gui/         unified PySide6 dashboard (all tabs)
   cli/         the `rnet` command
   db/          SQLite schema + migrations
 ```
@@ -493,6 +525,7 @@ pytest -q          # 96 tests, all green
 ### Read the specs
 
 - [Usage guide](docs/USAGE.md) — every command in detail
+- [GUI design plan](docs/GUI_PLAN.md) — dashboard architecture
 - [Architecture](docs/ARCHITECTURE.md) — layering and design
 - [Protocol specifications](docs/PROTOCOLS.md) — wire formats
 - [Database schemas](docs/DATABASE.md) — SQLite tables
