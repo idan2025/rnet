@@ -6,7 +6,7 @@ from typing import List, Tuple
 from rnet.errors import SchemaError
 
 # Current schema version. Bump on every migration.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Each migration: (version, [sql statements]). Applied in order at connect().
 MIGRATIONS: List[Tuple[int, List[str]]] = [
@@ -261,6 +261,18 @@ MIGRATIONS: List[Tuple[int, List[str]]] = [
                 manifest    BLOB,                   -- msgpack(AppManifest)
                 installed   INTEGER NOT NULL
             )""",
+        ],
+    ),
+    (
+        6,
+        [
+            # GUI contacts / address-book: trust + block flags on known
+            # identities, and a default-identity flag on owned identities.
+            "ALTER TABLE identities ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE identities ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE identities ADD COLUMN notes  TEXT",
+            "ALTER TABLE own_identities ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_id_blocked ON identities(blocked)",
         ],
     ),
 ]

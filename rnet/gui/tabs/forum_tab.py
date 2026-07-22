@@ -1,8 +1,17 @@
-"""Forum tab: post / recent / thread using the reference ForumApp."""
+"""Forum tab: boards, recent threads, thread view with replies."""
 from __future__ import annotations
 
-from rnet.gui.tabs.base import BaseTab, qt
+import time
+
+from rnet.gui.tabs.base import BaseTab
+from rnet.gui.widgets import qt, Card, SectionLabel, warn
 from rnet.gui.workers import offload
+
+
+def _when(ts: int) -> str:
+    if not ts:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
 class ForumTab(BaseTab):
@@ -10,50 +19,71 @@ class ForumTab(BaseTab):
         super().__init__(controller, bridge)
         QtWidgets, QtCore, QtGui = qt()
         self.widget = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(self.widget)
+        root = QtWidgets.QHBoxLayout(self.widget)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Author:"))
+        # Left: author + board + compose + recent.
+        left = Card()
+        ll = QtWidgets.QVBoxLayout(left)
+        ll.addWidget(SectionLabel("Author"))
         self.author_box = QtWidgets.QComboBox()
         self.author_box.setEditable(True)
-        row.addWidget(self.author_box, 1)
-        row.addWidget(QtWidgets.QLabel("Board:"))
+        ll.addWidget(self.author_box)
+        ll.addWidget(SectionLabel("Board"))
+        brow = QtWidgets.QHBoxLayout()
         self.board_field = QtWidgets.QLineEdit("forum")
-        row.addWidget(self.board_field)
-        v.addLayout(row)
-
-        row = QtWidgets.QHBoxLayout()
-        self.post_field = QtWidgets.QLineEdit()
-        self.post_field.setPlaceholderText("thread text")
-        row.addWidget(self.post_field, 1)
-        self.post_btn = QtWidgets.QPushButton("Post")
-        row.addWidget(self.post_btn)
-        v.addLayout(row)
-
-        v.addWidget(QtWidgets.QLabel("Recent threads:"))
+        brow.addWidget(self.board_field, 1)
+        ll.addLayout(brow)
+        self.post_field = QtWidgets.QPlainTextEdit()
+        self.post_field.setFixedHeight(60)
+        self.post_field.setPlaceholderText("start a new thread…")
+        ll.addWidget(self.post_field)
+        pb = QtWidgets.QPushButton("Post thread")
+        pb.setObjectName("primary")
+        pb.clicked.connect(self._on_post)
+        ll.addWidget(pb)
+        ll.addWidget(SectionLabel("Recent threads"))
         self.recent = QtWidgets.QListWidget()
-        v.addWidget(self.recent, 1)
+        self.recent.itemClicked.connect(self._on_thread)
+        ll.addWidget(self.recent, 1)
+        rb = QtWidgets.QPushButton("Refresh")
+        rb.clicked.connect(self._refresh)
+        ll.addWidget(rb)
+        root.addWidget(left, 2)
 
-        row = QtWidgets.QHBoxLayout()
-        self.refresh_btn = QtWidgets.QPushButton("Refresh")
-        self.thread_btn = QtWidgets.QPushButton("Show thread")
-        row.addWidget(self.refresh_btn)
-        row.addWidget(self.thread_btn)
-        v.addLayout(row)
+        # Right: thread view + reply.
+        right = Card()
+        rl = QtWidgets.QVBoxLayout(right)
+        rl.addWidget(SectionLabel("Thread"))
         self.thread_out = QtWidgets.QPlainTextEdit()
         self.thread_out.setReadOnly(True)
-        v.addWidget(self.thread_out, 1)
+        rl.addWidget(self.thread_out, 1)
+        rl.addWidget(SectionLabel("Reply"))
+        self.reply_field = QtWidgets.QPlainTextEdit()
+        self.reply_field.setFixedHeight(60)
+        rl.addWidget(self.reply_field)
+        rrow = QtWidgets.QHBoxLayout()
+        rrow.addStretch(1)
+        self.reply_btn = QtWidgets.QPushButton("Reply")
+        self.reply_btn.clicked.connect(self._on_reply)
+        rrow.addWidget(self.reply_btn)
+        rl.addLayout(rrow)
+        root.addWidget(right, 3)
 
-        self.post_btn.clicked.connect(self._on_post)
-        self.refresh_btn.clicked.connect(self._refresh)
-        self.thread_btn.clicked.connect(self._on_thread)
+        self._current_root = b""
         self._refresh_authors()
+        self._refresh()
 
     def _refresh_authors(self) -> None:
         QtWidgets, _, _ = qt()
         self.author_box.clear()
+        default = self.controller.default_identity_name()
         for r in self.controller.list_own_identities():
             self.author_box.addItem(r["name"])
+        if default:
+            idx = max(0, self.author_box.findText(default))
+            self.author_box.setCurrentIndex(idx)
 
     def _forum(self):
         sdk = self.controller.sdk
@@ -70,11 +100,11 @@ class ForumTab(BaseTab):
         QtWidgets, _, _ = qt()
         forum = self._forum()
         if forum is None:
-            QtWidgets.QMessageBox.warning(self.widget, "forum", "start the node first")
+            warn(self.widget, "forum", "start the node first")
             return
         name = self.author_box.currentText().strip()
         ident = self.controller.load_identity(name)
-        text = self.post_field.text()
+        text = self.post_field.toPlainText().strip()
         if ident is None or not text:
             return
         from rnet.identity import fingerprint
@@ -86,7 +116,7 @@ class ForumTab(BaseTab):
 
         def on_done(r):
             if isinstance(r, Exception):
-                QtWidgets.QMessageBox.warning(self.widget, "post failed", str(r))
+                warn(self.widget, "post failed", str(r))
             else:
                 self.post_field.clear()
                 self._refresh()
@@ -106,34 +136,76 @@ class ForumTab(BaseTab):
 
         def on_done(r):
             if isinstance(r, Exception) or not r:
+                self.recent.addItem("(no threads yet — start one)")
                 return
             for p in r:
-                self.recent.addItem(QtWidgets.QListWidgetItem(
-                    f"{p['hash'][:12]}  {p['author'][:8]}…  {p['body']}"))
+                who = self._resolve(p.get("author", ""))
+                body = (p.get("body") or "")[:60]
+                h = bytes(p["hash"]).hex() if isinstance(p.get("hash"), (bytes, bytearray)) else p.get("hash", "")
+                self.recent.addItem(QtWidgets.QListWidgetItem(f"{who} · {body}\n{h}"))
 
         offload(work, on_done=on_done)
 
-    def _on_thread(self) -> None:
+    def _resolve(self, fp_hex: str) -> str:
+        try:
+            row = self.controller.idm.store.get_known_by_fp(bytes.fromhex(fp_hex))
+            if row and (row["display"] or row["name"]):
+                return row["display"] or row["name"]
+        except Exception:
+            pass
+        return fp_hex[:10] + "…"
+
+    def _on_thread(self, item) -> None:
         QtWidgets, _, _ = qt()
-        item = self.recent.currentItem()
-        if item is None:
+        # Hash is on the second line of the item text.
+        lines = item.text().split("\n")
+        h = lines[-1].strip() if len(lines) > 1 else ""
+        try:
+            self._current_root = bytes.fromhex(h)
+        except Exception:
             return
-        h = item.text().split("  ")[0]
         forum = self._forum()
         if forum is None:
             return
         self.thread_out.clear()
 
         def work():
-            return forum.thread(bytes.fromhex(h))
+            return forum.thread(self._current_root)
 
         def on_done(r):
             if isinstance(r, Exception):
                 self.thread_out.appendPlainText(f"failed: {r}")
                 return
             for p in r:
-                indent = "    " if p.reply_to else ""
-                self.thread_out.appendPlainText(f"{indent}{p.ts}  {p.author[:8]}…  {p.body}")
+                indent = "    ↳ " if p.reply_to else ""
+                self.thread_out.appendPlainText(f"{indent}{self._resolve(p.author)} · {_when(p.ts)}")
+                self.thread_out.appendPlainText(f"{p.body}\n")
+
+        offload(work, on_done=on_done)
+
+    def _on_reply(self) -> None:
+        QtWidgets, _, _ = qt()
+        if not self._current_root:
+            warn(self.widget, "reply", "select a thread first")
+            return
+        forum = self._forum()
+        if forum is None:
+            return
+        name = self.author_box.currentText().strip()
+        ident = self.controller.load_identity(name)
+        text = self.reply_field.toPlainText().strip()
+        if ident is None or not text:
+            return
+
+        def work():
+            return forum.post(ident, text, reply_to=self._current_root)
+
+        def on_done(r):
+            if isinstance(r, Exception):
+                warn(self.widget, "reply failed", str(r))
+            else:
+                self.reply_field.clear()
+                self._on_thread(QtWidgets.QListWidgetItem(self._current_root.hex()))
 
         offload(work, on_done=on_done)
 

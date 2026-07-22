@@ -99,8 +99,9 @@ def test_main_window_builds_all_tabs(tmp_path, qapp):
     from rnet.gui.app import MainWindow
     c, bridge = _controller(str(tmp_path))
     w = MainWindow(c, bridge)
-    expected = {"Node", "Identities", "Messages", "Peers", "Hosting",
-                "Files", "Browser", "Social", "Forum", "Explorer"}
+    expected = {"Status", "Conversations", "Contacts", "Peers", "Files",
+                "Browser", "Social", "Forum", "Explorer", "Hosting",
+                "Interfaces", "Settings"}
     assert set(w.tab_objs.keys()) == expected
     w.show()
     qapp.processEvents()

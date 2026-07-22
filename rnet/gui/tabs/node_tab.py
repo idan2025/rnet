@@ -1,146 +1,170 @@
-"""Node tab: start/stop the node, configure name/capabilities, live log."""
+"""Status tab: live node dashboard (no manual start/stop)."""
 from __future__ import annotations
 
-from rnet.gui.tabs.base import BaseTab, qt
+from rnet.gui.tabs.base import BaseTab
+from rnet.gui.widgets import (
+    qt, Card, SectionLabel, CopyLabel, StatusDot, Avatar, IconButton, Toast,
+)
 
 
-ALL_CAPS = ["messaging", "relay", "web", "storage", "naming", "search", "social"]
+def _fmt_uptime(secs: float) -> str:
+    s = int(secs)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s//60}m {s%60}s"
+    if s < 86400:
+        return f"{s//3600}h {(s%3600)//60}m"
+    return f"{s//86400}d {(s%86400)//3600}h"
 
 
-class NodeTab(BaseTab):
+class StatusTab(BaseTab):
     def __init__(self, controller, bridge):
         super().__init__(controller, bridge)
         QtWidgets, QtCore, QtGui = qt()
         self.widget = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(self.widget)
+        root = QtWidgets.QVBoxLayout(self.widget)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
 
-        # Identity selection
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Node identity:"))
-        self.identity_box = QtWidgets.QComboBox()
-        self.identity_box.setEditable(True)
-        row.addWidget(self.identity_box, 1)
-        v.addLayout(row)
+        # Header card: avatar + name + dest + status dot.
+        head = Card()
+        head_lay = QtWidgets.QVBoxLayout(head)
+        head_lay.setContentsMargins(12, 12, 12, 12)
+        hrow = QtWidgets.QHBoxLayout()
+        self.avatar = Avatar("rnet", "RNet", 48)
+        hrow.addWidget(self.avatar)
+        col = QtWidgets.QVBoxLayout()
+        self.name_label = QtWidgets.QLabel("rnet-node")
+        f = self.name_label.font(); f.setPointSize(14); f.setBold(True)
+        self.name_label.setFont(f)
+        col.addWidget(self.name_label)
+        self.dest_label = CopyLabel("node: not running")
+        col.addWidget(self.dest_label)
+        hrow.addLayout(col, 1)
+        self.run_dot = StatusDot("amber")
+        hrow.addWidget(self.run_dot)
+        head_lay.addLayout(hrow)
+        root.addWidget(head)
 
-        # Name (defaults to selected identity)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Name:"))
-        self.name_field = QtWidgets.QLineEdit("rnet-node")
-        row.addWidget(self.name_field, 1)
-        v.addLayout(row)
+        # Stats row.
+        stats = Card("h")
+        stats_lay = QtWidgets.QHBoxLayout(stats)
+        stats_lay.setContentsMargins(12, 12, 12, 12)
+        self.stat_peers = self._stat(stats, "Peers", "0")
+        self.stat_ifaces = self._stat(stats, "Interfaces", "0")
+        self.stat_uptime = self._stat(stats, "Uptime", "—")
+        self.stat_caps = self._stat(stats, "Capabilities", "—")
+        root.addWidget(stats)
 
-        # Capabilities
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Capabilities:"))
-        self.cap_checks = {}
-        for cap in ALL_CAPS:
-            cb = QtWidgets.QCheckBox(cap)
-            if cap in ("messaging", "relay"):
-                cb.setChecked(True)
-            self.cap_checks[cap] = cb
-            row.addWidget(cb)
-        v.addLayout(row)
+        # Actions row.
+        acts = QtWidgets.QHBoxLayout()
+        self.announce_btn = QtWidgets.QPushButton("Announce now")
+        self.announce_btn.setObjectName("primary")
+        self.announce_btn.clicked.connect(self._on_announce)
+        acts.addWidget(self.announce_btn)
+        acts.addStretch(1)
+        root.addLayout(acts)
 
-        # Low power + bandwidth
-        row = QtWidgets.QHBoxLayout()
-        self.low_power = QtWidgets.QCheckBox("low-power (sleepy node)")
-        row.addWidget(self.low_power)
-        row.addWidget(QtWidgets.QLabel("Max bandwidth:"))
-        self.bw_box = QtWidgets.QComboBox()
-        self.bw_box.addItems(["low", "medium", "high"])
-        self.bw_box.setCurrentText("medium")
-        row.addWidget(self.bw_box)
-        v.addLayout(row)
-
-        # Start / stop
-        row = QtWidgets.QHBoxLayout()
-        self.start_btn = QtWidgets.QPushButton("Start node")
-        self.stop_btn = QtWidgets.QPushButton("Stop node")
-        self.stop_btn.setEnabled(False)
-        row.addWidget(self.start_btn)
-        row.addWidget(self.stop_btn)
-        v.addLayout(row)
-
-        # Dest + status
-        self.dest_label = QtWidgets.QLabel("node: not running")
-        v.addWidget(self.dest_label)
-
-        # Live log
-        v.addWidget(QtWidgets.QLabel("Log:"))
+        # Log card with filter + clear.
+        logcard = Card()
+        logcard_lay = QtWidgets.QVBoxLayout(logcard)
+        logcard_lay.setContentsMargins(12, 12, 12, 12)
+        lrow = QtWidgets.QHBoxLayout()
+        lrow.addWidget(SectionLabel("Live log"))
+        lrow.addStretch(1)
+        self.log_search = QtWidgets.QLineEdit()
+        self.log_search.setPlaceholderText("Filter log…")
+        self.log_search.setClearButtonEnabled(True)
+        self.log_search.textChanged.connect(self._filter_log)
+        lrow.addWidget(self.log_search, 2)
+        clr = QtWidgets.QPushButton("Clear")
+        clr.clicked.connect(lambda: self.log.clear())
+        lrow.addWidget(clr)
+        logcard.layout().addLayout(lrow)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
-        v.addWidget(self.log, 1)
-
-        self.start_btn.clicked.connect(self._on_start)
-        self.stop_btn.clicked.connect(self._on_stop)
+        self.log.setMaximumBlockCount(2000)
+        logcard.layout().addWidget(self.log)
+        root.addWidget(logcard, 1)
+        self._log_lines = []
 
         if bridge is not None:
-            bridge.log.connect(self.log.appendPlainText)
+            bridge.log.connect(self._append_log)
             bridge.node_started.connect(lambda e: self._post_start(e))
             bridge.node_stopped.connect(lambda e: self._post_stop())
 
-        self._refresh_identities()
+        # Live uptime + counters.
+        self._timer = QtCore.QTimer()
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(1000)
+        self._tick()
 
-    def _refresh_identities(self) -> None:
+    def _stat(self, card, label, value):
         QtWidgets, _, _ = qt()
-        self.identity_box.clear()
-        rows = self.controller.list_own_identities()
-        for r in rows:
-            self.identity_box.addItem(f"{r['name']} ({r['dest_hash'][:8]}…)")
-        if rows:
-            self.identity_box.setCurrentIndex(0)
-            self.name_field.setText(rows[0]["name"])
+        box = QtWidgets.QVBoxLayout()
+        cap = QtWidgets.QLabel(label)
+        cap.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
+        val = QtWidgets.QLabel(value)
+        f = val.font(); f.setPointSize(16); f.setBold(True)
+        val.setFont(f)
+        box.addWidget(cap); box.addWidget(val)
+        card.layout().addLayout(box)
+        return val
 
-    def _selected_name(self) -> str:
-        txt = self.identity_box.currentText()
-        # "alice (12e95047…)" -> "alice"
-        return txt.split(" (")[0].strip() or self.name_field.text().strip()
+    def _tick(self) -> None:
+        node = self.controller.node
+        if node and node.running:
+            self.run_dot.set_state("green")
+            self.dest_label.setText(node.node_dest_hash or "")
+            self.stat_peers.setText(str(len(node.peers())))
+            self.stat_ifaces.setText(str(len(node.interfaces())))
+            self.stat_uptime.setText(_fmt_uptime(node.uptime()))
+            self.stat_caps.setText(", ".join(node.config.capabilities))
+            self.name_label.setText(node.config.name)
+        else:
+            self.run_dot.set_state("grey")
+            self.stat_uptime.setText("—")
 
-    def _on_start(self) -> None:
-        name = self._selected_name() or self.name_field.text().strip()
-        if not name:
-            self.log.appendPlainText("error: pick or create an identity first")
-            return
-        caps = [c for c, cb in self.cap_checks.items() if cb.isChecked()]
-        # If web checked but no web_root yet, that's handled on the Hosting tab
-        # via restart; here we just pass None and let Hosting restart with root.
-        web_root = None
-        if "web" in caps:
-            web_root = getattr(self.controller, "web_root", None)
-        self.start_btn.setEnabled(False)
-        self.log.appendPlainText(f"starting node '{name}'…")
+    def _on_announce(self) -> None:
+        try:
+            self.controller.announce_now()
+            self._append_log("announce sent")
+        except Exception as exc:
+            self._append_log(f"announce failed: {exc}")
 
-        def on_done(node):
-            self.log.appendPlainText("node started")
+    def _append_log(self, text: str) -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        item = f"[{ts}] {text}"
+        self._log_lines.append(item)
+        if len(self._log_lines) > 2000:
+            self._log_lines = self._log_lines[-2000:]
+        self._render_log()
 
-        def on_error(exc):
-            self.log.appendPlainText(f"start failed: {exc}")
-            self.start_btn.setEnabled(True)
+    def _filter_log(self, needle: str) -> None:
+        self._render_log()
 
-        self.controller.start_node(
-            name=name, capabilities=caps,
-            low_power=self.low_power.isChecked(),
-            max_bandwidth=self.bw_box.currentText(),
-            web_root=web_root,
-            on_done=on_done, on_error=on_error,
-        )
-
-    def _on_stop(self) -> None:
-        self.stop_btn.setEnabled(False)
-        self.log.appendPlainText("stopping node…")
-        self.controller.stop_node(on_done=lambda _r: self.log.appendPlainText("node stopped"),
-                                  on_error=lambda e: self.log.appendPlainText(f"stop failed: {e}"))
+    def _render_log(self) -> None:
+        needle = (self.log_search.text() or "").lower()
+        lines = [ln for ln in self._log_lines
+                 if (not needle) or (needle in ln.lower())]
+        self.log.setPlainText("\n".join(lines))
 
     def _post_start(self, event) -> None:
         dest = event.get("dest", "") if isinstance(event, dict) else ""
-        self.dest_label.setText(f"node: {dest}")
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.dest_label.setText(dest)
+        self._tick()
 
     def _post_stop(self) -> None:
         self.dest_label.setText("node: not running")
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self._tick()
 
     def on_node_started(self) -> None:
-        self._refresh_identities()
+        self._tick()
+
+    def refresh(self) -> None:
+        self._tick()
+
+    def focus_search(self) -> None:
+        self.log_search.setFocus()

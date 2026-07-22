@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -28,6 +29,7 @@ from rnet.core.events import (
 from rnet.db.connection import Database
 from rnet.identity import IdentityManager, IdentityStore
 from rnet.protocol.capabilities import Bandwidth
+from rnet.gui.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +40,11 @@ class GuiController:
     def __init__(self, datadir: Optional[str] = None, rns_configdir: Optional[str] = None,
                  bridge=None):
         self.datadir = datadir or default_datadir()
-        self.rns_configdir = rns_configdir
+        os.makedirs(self.datadir, exist_ok=True)
+        # Keep RNS config inside the RNet data dir by default so GUI-managed
+        # interfaces persist alongside the rest of the user's data and survive
+        # a fresh ~/.reticulum. Env override still wins.
+        self.rns_configdir = rns_configdir or os.path.join(self.datadir, "reticulum")
         self.bridge = bridge  # Qt signal bridge (set by launch if GUI)
         # asyncio loop on a daemon thread (single shared loop)
         self.loop = asyncio.new_event_loop()
@@ -47,15 +53,28 @@ class GuiController:
 
         self.bus = EventBus()
         self.bus.bind(self.loop)
-        # DB + identity manager opened eagerly so Identities tab works pre-start.
-        import os
-        os.makedirs(self.datadir, exist_ok=True)
+        # DB + identity manager opened eagerly so Contacts tab works pre-start.
         self.db = Database(self._db_path())
         self.idm = IdentityManager(IdentityStore(self.db), self._keys_dir())
         self.node: Optional[Node] = None
         self._sdk = None
         self._bus_handlers = []
+        # Persistent GUI settings + cached start config.
+        self.settings = SettingsStore(os.path.join(self.datadir, "settings.json"))
+        self.web_root: Optional[str] = None
+        # RNS uses POSIX signals internally which only work on the main
+        # thread of the main interpreter. The node starts on the asyncio
+        # daemon thread, so pre-build RNS.Reticulum here (main thread) —
+        # Node.start() then reuses the instance via get_instance().
+        self._init_rns_mainthread()
         self._wire_bus()  # bus -> Qt signals, live even before node start
+
+    def _init_rns_mainthread(self) -> None:
+        try:
+            if RNS.Reticulum.get_instance() is None:
+                RNS.Reticulum(self.rns_configdir)
+        except Exception as exc:  # pragma: no cover - don't crash GUI on RNS init
+            log.warning("RNS init failed (will retry on node start): %s", exc)
 
     # -- paths ------------------------------------------------------------
     def _db_path(self) -> str:
@@ -94,6 +113,7 @@ class GuiController:
             RECEIPT_RECEIVED: "receipt_received",
             NODE_STARTED: "node_started",
             NODE_STOPPED: "node_stopped",
+            ANNOUNCE_RECEIVED: "announce_sent",
         }
         for ev_type, sig in mapping.items():
             h = relay(sig)
@@ -152,6 +172,170 @@ class GuiController:
             return True
 
         self.run_async(_stop(), on_done=on_done, on_error=on_error)
+
+    def restart_node(self, on_done=None, on_error=None) -> None:
+        """Stop and start again with the current config + identity."""
+        if self.node is None:
+            self.autostart(on_done=on_done, on_error=on_error)
+            return
+
+        async def _restart():
+            await self.node.restart()
+            return self.node
+
+        self.run_async(_restart(), on_done=on_done, on_error=on_error)
+
+    def autostart(self, on_done=None, on_error=None) -> None:
+        """Start the node using persisted settings + default identity.
+
+        Creates a ``default`` identity on first run. Safe to call from the GUI
+        launch path; never raises into the caller.
+        """
+        s = self.settings
+        name = s.get("default_identity")
+        if not name:
+            own = self.list_own_identities()
+            if own:
+                name = own[0]["name"]
+                s.set("default_identity", name)
+            else:
+                name = "default"
+                self.create_identity(name, is_node=True)
+                s.set("default_identity", name)
+        caps = s.get("capabilities") or ["messaging", "relay", "naming", "storage"]
+        self.start_node(
+            name=name,
+            capabilities=caps,
+            low_power=s.get("low_power", False),
+            max_bandwidth=s.get("max_bandwidth", "medium"),
+            web_root=self.web_root,
+            on_done=on_done,
+            on_error=on_error,
+        )
+
+    def announce_now(self) -> None:
+        if self.node is not None and self.node.running:
+            self.node.announce_now()
+
+    # -- hosting ---------------------------------------------------------
+    def start_hosting(self, web_root: str, on_done=None, on_error=None) -> None:
+        """Enable the web capability with ``web_root`` and restart the node."""
+        self.web_root = web_root
+        caps = list(self.settings.get("capabilities") or ["messaging", "relay", "naming", "storage"])
+        if "web" not in caps:
+            caps.append("web")
+        self.settings.set("capabilities", caps)
+        self._restart_with_caps(caps, web_root=web_root, on_done=on_done, on_error=on_error)
+
+    def stop_hosting(self, on_done=None, on_error=None) -> None:
+        """Drop the web capability and restart the node."""
+        self.web_root = None
+        caps = [c for c in (self.settings.get("capabilities") or [])
+                if c != "web"]
+        self.settings.set("capabilities", caps)
+        self._restart_with_caps(caps, web_root=None, on_done=on_done, on_error=on_error)
+
+    def _restart_with_caps(self, caps, web_root, on_done=None, on_error=None) -> None:
+        name = self.default_identity_name() or "default"
+
+        def _start():
+            self.start_node(
+                name=name, capabilities=caps,
+                low_power=self.settings.get("low_power", False),
+                max_bandwidth=self.settings.get("max_bandwidth", "medium"),
+                web_root=web_root,
+                on_done=on_done, on_error=on_error,
+            )
+
+        if self.node is not None and self.node.running:
+            self.stop_node(on_done=lambda _r: _start(), on_error=on_error)
+        else:
+            _start()
+
+    # -- interfaces ------------------------------------------------------
+    def list_interfaces(self) -> list:
+        if self.node is not None and self.node.running:
+            return self.node.interfaces()
+        # Before node start, read the RNS config file directly.
+        from rnet.gui.rns_config import read_interfaces, default_config_path
+        try:
+            return read_interfaces(default_config_path(self.rns_configdir))
+        except Exception:
+            return []
+
+    def add_interface(self, name: str, spec: dict, on_done=None, on_error=None) -> None:
+        from rnet.gui.rns_config import write_interface, default_config_path
+        path = default_config_path(self.rns_configdir)
+
+        def _do():
+            write_interface(path, name, spec)
+            return name
+
+        def _after(_r):
+            if self.bridge is not None:
+                self.bridge.interface_changed.emit({"action": "add", "name": name})
+            self.restart_node(on_done=on_done, on_error=on_error)
+
+        from rnet.gui.workers import offload
+        offload(_do, on_done=lambda _r: _after(_r))
+
+    def remove_interface(self, name: str, on_done=None, on_error=None) -> None:
+        from rnet.gui.rns_config import remove_interface, default_config_path
+        path = default_config_path(self.rns_configdir)
+
+        def _do():
+            return remove_interface(path, name)
+
+        def _after(_r):
+            if self.bridge is not None:
+                self.bridge.interface_changed.emit({"action": "remove", "name": name})
+            self.restart_node(on_done=on_done, on_error=on_error)
+
+        from rnet.gui.workers import offload
+        offload(_do, on_done=lambda _r: _after(_r))
+
+    # -- known identities (address book) ---------------------------------
+    def list_known(self, include_blocked: bool = False):
+        return self.idm.list_known(include_blocked=include_blocked)
+
+    def set_display(self, dest_hash: str, display: str) -> None:
+        self.idm.set_display(dest_hash, display)
+
+    def set_trusted(self, dest_hash: str, trusted: bool) -> None:
+        self.idm.set_trusted(dest_hash, trusted)
+
+    def set_blocked(self, dest_hash: str, blocked: bool) -> None:
+        self.idm.set_blocked(dest_hash, blocked)
+
+    def set_notes(self, dest_hash: str, notes: str) -> None:
+        self.idm.set_notes(dest_hash, notes)
+
+    def delete_known(self, dest_hash: str) -> None:
+        self.idm.delete_known(dest_hash)
+
+    # -- owned identities ------------------------------------------------
+    def delete_identity(self, name: str) -> None:
+        self.idm.delete_own(name)
+
+    def rename_identity(self, name: str, new_name: str) -> None:
+        self.idm.rename_own(name, new_name)
+        if self.settings.get("default_identity") == name:
+            self.settings.set("default_identity", new_name)
+
+    def set_default_identity(self, name: str) -> None:
+        self.idm.set_default(name)
+        self.settings.set("default_identity", name)
+
+    def default_identity_name(self) -> Optional[str]:
+        name = self.settings.get("default_identity")
+        if name:
+            return name
+        own = self.list_own_identities()
+        if own:
+            name = own[0]["name"]
+            self.settings.set("default_identity", name)
+            return name
+        return None
 
     @property
     def running(self) -> bool:

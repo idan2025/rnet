@@ -182,6 +182,51 @@ class IdentityManager:
     def list_own(self):
         return self.store.list_own()
 
+    def delete_own(self, name: str) -> None:
+        """Delete an owned identity by name (row + keyfile, best-effort)."""
+        self.store.delete_own(name)
+
+    def rename_own(self, name: str, new_name: str) -> None:
+        """Rename an owned identity. Does not move the keyfile on disk."""
+        if not new_name or new_name == name:
+            return
+        self.store.rename_own(name, new_name)
+
+    def set_default(self, name: str) -> None:
+        row = self.store.get_own_by_name(name)
+        if not row:
+            raise IdentityError(f"no owned identity named {name}")
+        self.store.set_default_own(row["dest_hash"])
+
+    def get_default(self):
+        """Return the default owned identity row, or the first one, or None."""
+        row = self.store.get_default_own()
+        if row is None:
+            own = self.store.list_own()
+            if own:
+                row = own[0]
+                self.store.set_default_own(row["dest_hash"])
+        return row
+
+    # -- known remote identities (address book) ---------------------------
+    def list_known(self, include_blocked: bool = False):
+        return self.store.list_known(include_blocked=include_blocked)
+
+    def set_display(self, dest_hash: str, display: str) -> None:
+        self.store.set_display(dest_hash, display)
+
+    def set_trusted(self, dest_hash: str, trusted: bool) -> None:
+        self.store.set_trusted(dest_hash, trusted)
+
+    def set_blocked(self, dest_hash: str, blocked: bool) -> None:
+        self.store.set_blocked(dest_hash, blocked)
+
+    def set_notes(self, dest_hash: str, notes: str) -> None:
+        self.store.set_notes(dest_hash, notes)
+
+    def delete_known(self, dest_hash: str) -> None:
+        self.store.delete_known(dest_hash)
+
     # -- profile signing --------------------------------------------------
     def make_profile(
         self,

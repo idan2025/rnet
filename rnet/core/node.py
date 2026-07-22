@@ -77,6 +77,7 @@ class Node:
         self.web = None        # WebService, built in start() if capable
         self.naming = None     # NamingService, built in start()
         self.sdk = None        # RNet SDK facade, built in start()
+        self._started_at: Optional[float] = None
         # Loop binding deferred until start() (the loop may not exist yet).
 
     # -- lifecycle --------------------------------------------------------
@@ -132,6 +133,7 @@ class Node:
         RNS.Transport.register_announce_handler(self._announce_handler)
 
         self._running = True
+        self._started_at = time.time()
         self.bus.emit(NODE_STARTED, {"name": self.config.name,
                                      "dest": self.node_dest_hash})
 
@@ -253,3 +255,52 @@ class Node:
     @property
     def running(self) -> bool:
         return self._running
+
+    def uptime(self) -> float:
+        """Seconds since start, or 0 if not started."""
+        if self._started_at is None:
+            return 0.0
+        return time.time() - self._started_at
+
+    def interfaces(self) -> list:
+        """Snapshot of RNS interfaces as plain dicts for the GUI.
+
+        Reads ``self.reticulum.interfaces`` (a name -> RNS interface object
+        dict). Each RNS interface exposes different attributes depending on
+        type, so this is best-effort and never raises.
+        """
+        out = []
+        if self.reticulum is None:
+            return out
+        try:
+            ifaces = self.reticulum.interfaces or {}
+        except Exception:  # pragma: no cover - defensive
+            return out
+        for name, ifc in ifaces.items():
+            entry = {
+                "name": str(name),
+                "type": getattr(ifc, "type", type(ifc).__name__),
+                "enabled": bool(getattr(ifc, "enabled", True)),
+                "online": bool(getattr(ifc, "online", False)),
+                "mode": getattr(ifc, "mode", None),
+                "rx_bytes": getattr(ifc, "rx_bytes", None),
+                "tx_bytes": getattr(ifc, "tx_bytes", None),
+                "bitrate": getattr(ifc, "bitrate", None),
+                "rssi": getattr(ifc, "rssi", None),
+                "snr": getattr(ifc, "snr", None),
+            }
+            # Surface common config knobs for display.
+            for attr in ("target_host", "target_port", "device", "port",
+                         "host", "listen_port", "bitrate"):
+                val = getattr(ifc, attr, None)
+                if val is not None:
+                    entry[attr] = val
+            out.append(entry)
+        return out
+
+    async def restart(self) -> None:
+        """Stop and start again with the same config + identity."""
+        await self.stop()
+        # Brief yield so downstream observers see NODE_STOPPED before restart.
+        await asyncio.sleep(0.2)
+        await self.start()
