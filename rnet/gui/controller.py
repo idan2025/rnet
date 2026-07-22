@@ -187,16 +187,31 @@ class GuiController:
         self.run_async(_stop(), on_done=on_done, on_error=on_error)
 
     def restart_node(self, on_done=None, on_error=None) -> None:
-        """Stop and start again with the current config + identity."""
+        """Stop and start again from current settings (not node.restart()).
+
+        ``node.restart()`` reuses the already-built ``NodeConfig``, so a
+        renamed identity (Settings → Node name) or changed capabilities would
+        NOT take effect — the node would keep announcing the old name. Rebuild
+        the node from persisted settings + the current default identity so the
+        new name/caps actually apply.
+        """
         if self.node is None:
             self.autostart(on_done=on_done, on_error=on_error)
             return
 
-        async def _restart():
-            await self.node.restart()
-            return self.node
+        name = self.default_identity_name() or self.node.config.name
+        caps = self.settings.get("capabilities") or self.node.config.capabilities
 
-        self.run_async(_restart(), on_done=on_done, on_error=on_error)
+        def _start():
+            self.start_node(
+                name=name, capabilities=caps,
+                low_power=self.settings.get("low_power", False),
+                max_bandwidth=self.settings.get("max_bandwidth", "medium"),
+                web_root=self.web_root,
+                on_done=on_done, on_error=on_error,
+            )
+
+        self.stop_node(on_done=lambda _r: _start(), on_error=on_error)
 
     def autostart(self, on_done=None, on_error=None) -> None:
         """Start the node using persisted settings + default identity.

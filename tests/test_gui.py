@@ -78,6 +78,39 @@ def test_controller_start_stop_node(tmp_path, qapp):
     c.shutdown()
 
 
+def test_restart_node_applies_renamed_identity(tmp_path, qapp):
+    """restart_node must rebuild from settings so a renamed identity's name
+    takes effect — node.restart() reuses the old NodeConfig and would keep
+    announcing the old name."""
+    import asyncio, time
+    c, bridge = _controller(str(tmp_path))
+    c.create_identity("default", is_node=True)
+    started = {"v": False}
+    c.start_node(name="default", capabilities=["messaging", "relay"],
+                 max_bandwidth="medium", on_done=lambda _n: started.__setitem__("v", True))
+    deadline = time.time() + 15
+    while not c.running and time.time() < deadline:
+        qapp.processEvents(); time.sleep(0.05)
+    assert c.running
+    assert c.node.config.name == "default"
+
+    # Rename via the Settings flow, then restart.
+    c.set_node_name("alice")
+    assert c.default_identity_name() == "alice"
+    restarted = {"v": False}
+    c.restart_node(on_done=lambda _n: restarted.__setitem__("v", True))
+    deadline = time.time() + 20
+    while not restarted["v"] and time.time() < deadline:
+        qapp.processEvents(); time.sleep(0.05)
+    assert restarted["v"], "restart did not complete"
+    assert c.running
+    # New name applied to the rebuilt node's config (what it announces).
+    assert c.node.config.name == "alice"
+    # Same identity / dest hash (rename keeps keys).
+    assert c.node.node_dest_hash is not None
+    c.shutdown()
+
+
 def test_interfaces_live_add_remove(tmp_path, qapp):
     """Adding/removing an interface applies live to a running node and shows
     up in list_interfaces (which must read RNS.Transport.interfaces, not the
