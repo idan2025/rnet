@@ -96,6 +96,18 @@ class MainWindow:
             bridge.log.connect(self.status.showMessage)
             bridge.node_started.connect(self._on_node_started)
             bridge.node_stopped.connect(self._on_node_stopped)
+            # Live peer / interface counts: refresh the status bar the moment
+            # a peer is discovered or an interface changes, not only on start.
+            bridge.peer_discovered.connect(lambda _e: self._refresh_status())
+            bridge.interface_changed.connect(lambda _e: self._refresh_status())
+
+        # Periodic refresh so the status bar's peer / iface counters and
+        # online state track reality (peers going stale, interfaces
+        # going up/down) without waiting for a Reticulum restart.
+        self._status_timer = QtCore.QTimer()
+        self._status_timer.timeout.connect(self._refresh_status)
+        self._status_timer.start(2000)
+        self._refresh_status()
 
         self.win.closeEvent = self._close_event
 
@@ -113,17 +125,9 @@ class MainWindow:
 
     # -- node state -------------------------------------------------------
     def _on_node_started(self, event) -> None:
-        dest = event.get("dest", "") if isinstance(event, dict) else ""
         from rnet.gui.widgets import StatusDot
         self.status_dot.set_state("green")
-        n_peers = 0
-        n_if = 0
-        try:
-            n_peers = len(self.controller.node.peers()) if self.controller.node else 0
-            n_if = len(self.controller.list_interfaces())
-        except Exception:
-            pass
-        self.status_label.setText(f"node running · {dest[:12]}… · {n_peers} peers · {n_if} ifaces")
+        self._refresh_status()
         for tab in self.tab_objs.values():
             if hasattr(tab, "on_node_started"):
                 tab.on_node_started()
@@ -131,10 +135,34 @@ class MainWindow:
     def _on_node_stopped(self, event) -> None:
         from rnet.gui.widgets import StatusDot
         self.status_dot.set_state("grey")
-        self.status_label.setText("node stopped")
+        self._refresh_status()
         for tab in self.tab_objs.values():
             if hasattr(tab, "on_node_stopped"):
                 tab.on_node_stopped()
+
+    def _refresh_status(self) -> None:
+        """Rebuild the bottom status bar from live node state.
+
+        Called on start/stop, on peer_discovered / interface_changed signals,
+        and on a 2s timer — so the peer + iface counters stay current without
+        a Reticulum restart.
+        """
+        node = self.controller.node
+        if node is not None and node.running:
+            dest = node.node_dest_hash or ""
+            try:
+                n_peers = len(node.peers())
+            except Exception:
+                n_peers = 0
+            try:
+                n_if = len(self.controller.list_interfaces())
+            except Exception:
+                n_if = 0
+            self.status_label.setText(
+                f"node running · {dest[:12]}… · {n_peers} peers · {n_if} ifaces"
+            )
+        else:
+            self.status_label.setText("node stopped")
 
     # -- menu + shortcuts -------------------------------------------------
     def _build_menu(self) -> None:

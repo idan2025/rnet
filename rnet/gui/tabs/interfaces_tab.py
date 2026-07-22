@@ -110,6 +110,15 @@ class InterfacesTab(BaseTab):
         self._build_type_fields(self.type_box.currentText())
         self._refresh()
 
+        # Live updates: interface online/offline state, bitrate and rx/tx
+        # counters change without any user action, so poll on a timer and
+        # refresh immediately when an interface is added/edited/removed.
+        if bridge is not None:
+            bridge.interface_changed.connect(lambda _e: self._refresh())
+        self._timer = QtCore.QTimer()
+        self._timer.timeout.connect(self._refresh)
+        self._timer.start(3000)
+
     def _build_type_fields(self, type_name: str) -> None:
         QtWidgets, _, _ = qt()
         # Clear existing.

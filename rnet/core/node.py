@@ -68,6 +68,7 @@ class Node:
         self.destination: Optional[RNS.Destination] = None
         self.node_dest_hash: Optional[str] = None
         self._announce_task: Optional[asyncio.Task] = None
+        self._early_announce_task: Optional[asyncio.Task] = None
         self._announce_handler: Optional[AnnounceHandler] = None
         self._running = False
         self._seq = 0
@@ -161,6 +162,13 @@ class Node:
         # Announce once immediately, then on a schedule.
         self.announce_now()
         self._announce_task = asyncio.create_task(self._announce_loop())
+        # Re-announce once more shortly after start: the immediate announce
+        # above can race interface bring-up (TCP/Auto/RNode links take a
+        # moment to come online), so peers on a freshly opened interface
+        # would otherwise miss us until the next ~120s loop tick. Giving the
+        # link time to settle then re-announcing is what makes two nodes
+        # "testing together" actually discover each other without a restart.
+        self._early_announce_task = asyncio.create_task(self._early_announce())
 
         # Build the SDK facade (apps + node code use this).
         from rnet.apps import RNet
@@ -194,6 +202,13 @@ class Node:
             except asyncio.CancelledError:
                 pass
             self._announce_task = None
+        if self._early_announce_task:
+            self._early_announce_task.cancel()
+            try:
+                await self._early_announce_task
+            except asyncio.CancelledError:
+                pass
+            self._early_announce_task = None
         if self._announce_handler is not None:
             try:
                 RNS.Transport.deregister_announce_handler(self._announce_handler)
@@ -255,6 +270,15 @@ class Node:
             if self._running:
                 self.announce_now()
                 self.registry.prune_stale()
+
+    async def _early_announce(self) -> None:
+        """One-shot re-announce ~15s after start (see start() for rationale)."""
+        try:
+            await asyncio.sleep(15.0)
+        except asyncio.CancelledError:
+            return
+        if self._running:
+            self.announce_now()
 
     # -- introspection ----------------------------------------------------
     def peers(self):

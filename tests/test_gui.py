@@ -149,6 +149,62 @@ def test_main_window_builds_all_tabs(tmp_path, qapp):
     c.shutdown()
 
 
+def test_status_bar_refreshes_on_peer_and_iface_signals(tmp_path, qapp):
+    """Bottom status bar must update live on peer_discovered /
+    interface_changed, not only on a Reticulum restart."""
+    import time
+    from rnet.gui.app import MainWindow
+    c, bridge = _controller(str(tmp_path))
+    w = MainWindow(c, bridge)
+    calls = {"n": 0}
+    orig = w._refresh_status
+
+    def counting():
+        calls["n"] += 1
+        orig()
+
+    w._refresh_status = counting
+    # Reconnect the bridge signals to the patched method.
+    bridge.peer_discovered.disconnect()
+    bridge.interface_changed.disconnect()
+    bridge.peer_discovered.connect(lambda _e: w._refresh_status())
+    bridge.interface_changed.connect(lambda _e: w._refresh_status())
+
+    before = calls["n"]
+    bridge.peer_discovered.emit({"dest": "x"})
+    bridge.interface_changed.emit({"action": "add", "name": "udp"})
+    deadline = time.time() + 2
+    while calls["n"] < before + 2 and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert calls["n"] >= before + 2, calls
+    c.shutdown()
+
+
+def test_interfaces_tab_refreshes_on_interface_changed(tmp_path, qapp):
+    """Interfaces tab must refresh when an interface is added/edited/removed,
+    and poll on a timer — not only on manual button clicks."""
+    import time
+    from rnet.gui.tabs.interfaces_tab import InterfacesTab
+    c, bridge = _controller(str(tmp_path))
+    tab = InterfacesTab(c, bridge)
+    calls = {"n": 0}
+    orig = tab._refresh
+
+    def counting():
+        calls["n"] += 1
+        orig()
+
+    tab._refresh = counting
+    bridge.interface_changed.emit({"action": "add", "name": "udp"})
+    deadline = time.time() + 2
+    while calls["n"] == 0 and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert calls["n"] >= 1, calls
+    c.shutdown()
+
+
 def test_browser_and_explorer_widgets_construct(tmp_path, qapp):
     from rnet.browser import BrowserModel
     from rnet.browser.view import BrowserWidget

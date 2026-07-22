@@ -155,7 +155,8 @@ class GuiController:
             ratchets_path=ratchets_path,
         )
         self.node = Node(cfg, ident, self.db, bus=self.bus, identity_manager=self.idm)
-        self._wire_bus()
+        # Bus -> Qt bridge is wired once in __init__; don't re-subscribe here
+        # or every event emits twice (double refreshes / double signals).
 
         async def _start():
             await self.node.start(loop=self.loop)

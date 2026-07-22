@@ -124,9 +124,15 @@ async def test_node_start_announce_and_stop():
             assert len(adv_bytes) <= 223
             adv = CapabilityAdvertisement.from_bytes(adv_bytes)
             assert "messaging" in adv.caps
+            # Early re-announce task is scheduled at start (so peers on
+            # interfaces that came up after the t=0 announce still see us).
+            assert node._early_announce_task is not None
+            assert not node._early_announce_task.done()
         finally:
             await node.stop()
         assert not node.running
+        # stop() cancels the early re-announce task.
+        assert node._early_announce_task is None
 
 
 @pytest.mark.asyncio
