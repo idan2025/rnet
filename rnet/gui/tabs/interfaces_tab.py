@@ -1,5 +1,7 @@
-"""Interfaces tab: list + add/remove RNS interfaces (RNode, TCP, UDP, ...)."""
+"""Interfaces tab: list + add/edit/remove RNS interfaces (RNode, TCP, UDP, ...)."""
 from __future__ import annotations
+
+from typing import Optional
 
 from rnet.gui.tabs.base import BaseTab
 from rnet.gui.widgets import qt, Card, SectionLabel, StatusDot, confirm, warn
@@ -49,10 +51,20 @@ class InterfacesTab(BaseTab):
         ref_btn = QtWidgets.QPushButton("Refresh")
         ref_btn.clicked.connect(self._refresh)
         lrow.addWidget(ref_btn)
+        edit_btn = QtWidgets.QPushButton("Edit…")
+        edit_btn.clicked.connect(self._edit_selected)
+        lrow.addWidget(edit_btn)
+        rm_btn = QtWidgets.QPushButton("Remove…")
+        rm_btn.clicked.connect(self._remove_selected)
+        lrow.addWidget(rm_btn)
         ll.addLayout(lrow)
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["", "name", "type", "details", ""])
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["", "name", "type", "details"])
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        # Keep the right-click context menu too (Remove).
         self.table.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
         act_remove = QtGui.QAction("Remove interface", self.table)
         act_remove.triggered.connect(self._remove_selected)
@@ -60,10 +72,11 @@ class InterfacesTab(BaseTab):
         ll.addWidget(self.table, 1)
         root.addWidget(lst, 1)
 
-        # Add form.
+        # Add / edit form.
         add = Card()
         al = QtWidgets.QVBoxLayout(add)
-        al.addWidget(SectionLabel("Add interface"))
+        self.form_title = SectionLabel("Add interface")
+        al.addWidget(self.form_title)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("name:"))
         self.iface_name = QtWidgets.QLineEdit()
@@ -79,13 +92,21 @@ class InterfacesTab(BaseTab):
         self.fields_holder = QtWidgets.QWidget()
         self.fields_layout = QtWidgets.QFormLayout(self.fields_holder)
         al.addWidget(self.fields_holder)
-        add_btn = QtWidgets.QPushButton("Add + restart")
-        add_btn.setObjectName("primary")
-        add_btn.clicked.connect(self._on_add)
-        al.addWidget(add_btn)
+        btn_row = QtWidgets.QHBoxLayout()
+        self.add_btn = QtWidgets.QPushButton("Add")
+        self.add_btn.setObjectName("primary")
+        self.add_btn.clicked.connect(self._on_submit)
+        btn_row.addWidget(self.add_btn)
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self._cancel_edit)
+        self.cancel_btn.setVisible(False)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.cancel_btn)
+        al.addLayout(btn_row)
         root.addWidget(add)
 
         self._field_widgets = {}
+        self._editing: Optional[str] = None
         self._build_type_fields(self.type_box.currentText())
         self._refresh()
 
@@ -113,7 +134,6 @@ class InterfacesTab(BaseTab):
             self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(str(ifc.get("type", ""))))
             details = self._details(ifc)
             self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(details))
-            self.table.setItem(i, 4, QtWidgets.QTableWidgetItem(""))
         self.table.resizeColumnsToContents()
 
     @staticmethod
@@ -129,30 +149,101 @@ class InterfacesTab(BaseTab):
             parts.append(f"tx={ifc['tx_bytes']}")
         return "  ".join(parts)
 
-    def _on_add(self) -> None:
-        QtWidgets, _, _ = qt()
-        name = self.iface_name.text().strip()
-        if not name:
-            warn(self.widget, "add interface", "give the interface a name")
-            return
+    def _spec_from_form(self) -> dict:
         spec = {"type": self.type_box.currentText(), "interface_enabled": True}
         for key, edit in self._field_widgets.items():
             val = edit.text().strip()
             if val:
                 spec[key] = val
-        self.iface_name.clear()
-        self.controller.add_interface(name, spec,
-                                       on_done=lambda _r: self._refresh(),
-                                       on_error=lambda e: warn(self.widget, "add failed", str(e)))
+        return spec
 
-    def _remove_selected(self) -> None:
+    def _on_submit(self) -> None:
+        QtWidgets, _, _ = qt()
+        name = self.iface_name.text().strip()
+        if not name:
+            warn(self.widget, "interface", "give the interface a name")
+            return
+        spec = self._spec_from_form()
+        if self._editing is not None:
+            target = self._editing
+            self._reset_form()
+            self.controller.update_interface(
+                target, spec,
+                on_done=lambda _r: self._refresh(),
+                on_error=lambda e: warn(self.widget, "edit failed", str(e)),
+            )
+        else:
+            self.iface_name.clear()
+            self.controller.add_interface(
+                name, spec,
+                on_done=lambda _r: self._refresh(),
+                on_error=lambda e: warn(self.widget, "add failed", str(e)),
+            )
+
+    def _edit_selected(self) -> None:
+        QtWidgets, _, _ = qt()
         r = self.table.currentRow()
         if r < 0:
+            warn(self.widget, "edit interface", "select an interface to edit")
+            return
+        name = self.table.item(r, 1).text()
+        ifc = self.controller.get_interface(name)
+        if ifc is None:
+            warn(self.widget, "edit interface", f"could not read config for '{name}'")
+            return
+        # Map the RNS interface type string back to our spec type key.
+        rns_type = ifc.get("type", "")
+        spec_key = None
+        for k, v in SPEC_TYPES.items():
+            if v["rns_type"] == rns_type:
+                spec_key = k
+                break
+        if spec_key is None:
+            warn(self.widget, "edit interface",
+                 f"unsupported interface type '{rns_type}'")
+            return
+        self._editing = name
+        self.form_title.setText(f"Edit interface — {name}")
+        self.iface_name.setText(name)
+        self.iface_name.setReadOnly(True)
+        self.type_box.setCurrentText(spec_key)
+        # _build_type_fields fired on setCurrentText; now fill values. Clear
+        # first so a re-edit of the same type doesn't keep stale text.
+        options = ifc.get("options", {})
+        for key, edit in self._field_widgets.items():
+            edit.clear()
+            if key in options:
+                edit.setText(str(options[key]))
+        self.add_btn.setText("Save")
+        self.cancel_btn.setVisible(True)
+
+    def _cancel_edit(self) -> None:
+        self._reset_form()
+
+    def _reset_form(self) -> None:
+        QtWidgets, _, _ = qt()
+        self._editing = None
+        self.form_title.setText("Add interface")
+        self.iface_name.clear()
+        self.iface_name.setReadOnly(False)
+        self.add_btn.setText("Add")
+        self.cancel_btn.setVisible(False)
+        for edit in self._field_widgets.values():
+            edit.clear()
+
+    def _remove_selected(self) -> None:
+        QtWidgets, _, _ = qt()
+        r = self.table.currentRow()
+        if r < 0:
+            warn(self.widget, "remove interface", "select an interface to remove")
             return
         name = self.table.item(r, 1).text()
         if not confirm(self.widget, "Remove interface",
-                       f"Remove '{name}' and restart Reticulum?"):
+                       f"Remove '{name}'?"):
             return
+        # If we were editing this one, drop the half-edited form.
+        if self._editing == name:
+            self._reset_form()
         self.controller.remove_interface(name,
                                            on_done=lambda _r: self._refresh(),
                                            on_error=lambda e: warn(self.widget, "remove failed", str(e)))

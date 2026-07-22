@@ -276,18 +276,22 @@ class Node:
     def interfaces(self) -> list:
         """Snapshot of RNS interfaces as plain dicts for the GUI.
 
-        Reads ``self.reticulum.interfaces`` (a name -> RNS interface object
-        dict). Each RNS interface exposes different attributes depending on
-        type, so this is best-effort and never raises.
+        Reads ``RNS.Transport.interfaces`` (the live list of running RNS
+        interface objects). ``RNS.Reticulum`` does not expose an
+        ``.interfaces`` attribute itself, so reading ``self.reticulum.interfaces``
+        always raised and returned ``[]`` — the Interfaces tab was blank even
+        when interfaces were active. Each RNS interface exposes different
+        attributes depending on type, so this is best-effort and never raises.
         """
         out = []
         if self.reticulum is None:
             return out
         try:
-            ifaces = self.reticulum.interfaces or {}
+            ifaces = list(RNS.Transport.interfaces)
         except Exception:  # pragma: no cover - defensive
             return out
-        for name, ifc in ifaces.items():
+        for ifc in ifaces:
+            name = getattr(ifc, "name", None) or type(ifc).__name__
             entry = {
                 "name": str(name),
                 "type": getattr(ifc, "type", type(ifc).__name__),
@@ -308,6 +312,48 @@ class Node:
                     entry[attr] = val
             out.append(entry)
         return out
+
+    # -- live interface management ---------------------------------------
+    # RNS loads interface blocks from the config file only inside
+    # ``RNS.Reticulum.__init__``. The Reticulum instance is a process singleton
+    # that refuses reinitialisation, so simply writing the config and calling
+    # ``node.restart()`` never picks up new/edited interfaces — the old
+    # instance is reused and the config is never re-read. To apply an
+    # interface change to a running node we synthesize/detach the interface
+    # live against the existing Reticulum instead, which is the same code path
+    # RNS itself uses at startup.
+    def load_interface_live(self, name: str) -> None:
+        """Add interface ``name`` to the running Reticulum from its config block.
+
+        Best-effort: raises on a malformed block so the caller can surface it.
+        """
+        if self.reticulum is None:
+            raise RNetError("node not started")
+        from RNS.vendor.configobj import ConfigObj
+        cfg_path = os.path.join(self.config.rns_configdir, "config")
+        cfg = ConfigObj(cfg_path)
+        section = cfg.get("interfaces", {}).get(name)
+        if section is None:
+            raise RNetError(f"interface '{name}' not found in {cfg_path}")
+        self.reticulum._synthesize_interface(section, name)
+
+    def unload_interface_live(self, name: str) -> bool:
+        """Detach + remove interface ``name`` from the running Reticulum.
+
+        Returns True if an interface was found and removed.
+        """
+        if self.reticulum is None:
+            return False
+        removed = False
+        for ifc in list(RNS.Transport.interfaces):
+            if getattr(ifc, "name", None) == name:
+                try:
+                    ifc.detach()
+                except Exception:  # pragma: no cover - shutdown best-effort
+                    pass
+                RNS.Transport.remove_interface(ifc)
+                removed = True
+        return removed
 
     async def restart(self) -> None:
         """Stop and start again with the same config + identity."""

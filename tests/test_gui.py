@@ -78,6 +78,47 @@ def test_controller_start_stop_node(tmp_path, qapp):
     c.shutdown()
 
 
+def test_interfaces_live_add_remove(tmp_path, qapp):
+    """Adding/removing an interface applies live to a running node and shows
+    up in list_interfaces (which must read RNS.Transport.interfaces, not the
+    non-existent reticulum.interfaces attr)."""
+    import asyncio, time
+    c, _b = _controller(str(tmp_path))
+    c.create_identity("n1", is_node=True)
+    started = {"v": False}
+    c.start_node(name="n1", capabilities=["messaging", "relay"],
+                 max_bandwidth="medium", on_done=lambda _n: started.__setitem__("v", True))
+    deadline = time.time() + 20
+    while not c.running and time.time() < deadline:
+        qapp.processEvents(); time.sleep(0.05)
+    assert c.running
+
+    box = {}
+    c.add_interface("udp-test", {"type": "UDP", "listen_ip": "127.0.0.1",
+                                  "listen_port": "39871", "interface_enabled": True},
+                    on_done=lambda r: box.__setitem__("done", r),
+                    on_error=lambda e: box.__setitem__("err", e))
+    deadline = time.time() + 10
+    while "done" not in box and "err" not in box and time.time() < deadline:
+        qapp.processEvents(); time.sleep(0.05)
+    assert "done" in box and "err" not in box, box
+    time.sleep(0.3); qapp.processEvents()
+    names = [i.get("name") for i in c.list_interfaces()]
+    assert "udp-test" in names
+
+    rbox = {}
+    c.remove_interface("udp-test",
+                       on_done=lambda r: rbox.__setitem__("done", r),
+                       on_error=lambda e: rbox.__setitem__("err", e))
+    deadline = time.time() + 10
+    while "done" not in rbox and "err" not in rbox and time.time() < deadline:
+        qapp.processEvents(); time.sleep(0.05)
+    assert "done" in rbox
+    time.sleep(0.3); qapp.processEvents()
+    assert "udp-test" not in [i.get("name") for i in c.list_interfaces()]
+    c.shutdown()
+
+
 def test_event_to_signal_bridge(tmp_path, qapp):
     import asyncio, time
     from rnet.core.events import MESSAGE_RECEIVED

@@ -263,36 +263,83 @@ class GuiController:
         except Exception:
             return []
 
+    def get_interface(self, name: str) -> Optional[dict]:
+        """Return ``{name, type, options}`` for one interface from config."""
+        from rnet.gui.rns_config import read_interfaces, default_config_path
+        try:
+            for ifc in read_interfaces(default_config_path(self.rns_configdir)):
+                if ifc.get("name") == name:
+                    return ifc
+        except Exception:
+            return None
+        return None
+
     def add_interface(self, name: str, spec: dict, on_done=None, on_error=None) -> None:
         from rnet.gui.rns_config import write_interface, default_config_path
         path = default_config_path(self.rns_configdir)
 
         def _do():
             write_interface(path, name, spec)
+            # Apply live to a running node; if the node isn't running the
+            # block will be picked up from config on the next start.
+            if self.node is not None and self.node.running:
+                self.node.load_interface_live(name)
             return name
 
         def _after(_r):
             if self.bridge is not None:
                 self.bridge.interface_changed.emit({"action": "add", "name": name})
-            self.restart_node(on_done=on_done, on_error=on_error)
+            if on_done is not None:
+                on_done(_r)
 
         from rnet.gui.workers import offload
-        offload(_do, on_done=lambda _r: _after(_r))
+        offload(_do, on_done=lambda _r: _after(_r), on_error=on_error)
 
-    def remove_interface(self, name: str, on_done=None, on_error=None) -> None:
-        from rnet.gui.rns_config import remove_interface, default_config_path
+    def update_interface(self, name: str, spec: dict, on_done=None, on_error=None) -> None:
+        """Edit an existing interface block in config + apply live.
+
+        ``write_interface`` is idempotent (it replaces any existing block of
+        the same name), so this rewrites the config then reloads the interface
+        on a running node: detach the old live instance and synthesize the new
+        one from the updated config.
+        """
+        from rnet.gui.rns_config import write_interface, default_config_path
         path = default_config_path(self.rns_configdir)
 
         def _do():
-            return remove_interface(path, name)
+            if self.node is not None and self.node.running:
+                self.node.unload_interface_live(name)
+            write_interface(path, name, spec)
+            if self.node is not None and self.node.running:
+                self.node.load_interface_live(name)
+            return name
+
+        def _after(_r):
+            if self.bridge is not None:
+                self.bridge.interface_changed.emit({"action": "update", "name": name})
+            if on_done is not None:
+                on_done(_r)
+
+        from rnet.gui.workers import offload
+        offload(_do, on_done=lambda _r: _after(_r), on_error=on_error)
+
+    def remove_interface(self, name: str, on_done=None, on_error=None) -> None:
+        from rnet.gui.rns_config import remove_interface as remove_block, default_config_path
+        path = default_config_path(self.rns_configdir)
+
+        def _do():
+            if self.node is not None and self.node.running:
+                self.node.unload_interface_live(name)
+            return remove_block(path, name)
 
         def _after(_r):
             if self.bridge is not None:
                 self.bridge.interface_changed.emit({"action": "remove", "name": name})
-            self.restart_node(on_done=on_done, on_error=on_error)
+            if on_done is not None:
+                on_done(_r)
 
         from rnet.gui.workers import offload
-        offload(_do, on_done=lambda _r: _after(_r))
+        offload(_do, on_done=lambda _r: _after(_r), on_error=on_error)
 
     # -- known identities (address book) ---------------------------------
     def list_known(self, include_blocked: bool = False):
@@ -349,11 +396,27 @@ class GuiController:
         return self.sdk
 
     def shutdown(self) -> None:
-        """Best-effort cleanup on app exit."""
+        """Best-effort cleanup on app exit.
+
+        Stops the node (bounded so a hung RNS teardown can't wedge the GUI),
+        detaches RNS interfaces so sockets/threads close, then stops the
+        asyncio loop and joins its thread so the process can actually exit.
+        """
         if self.node is not None and self.node.running:
             try:
                 fut = asyncio.run_coroutine_threadsafe(self.node.stop(), self.loop)
-                fut.result(timeout=10)
-            except Exception:  # pragma: no cover
+                fut.result(timeout=5)
+            except Exception:  # pragma: no cover - shutdown best-effort
                 pass
+        # Detach RNS interfaces (closes TCP/serial sockets, stops interface
+        # threads). RNS threads are daemon, so this is about clean teardown,
+        # not unblocking interpreter exit.
+        try:
+            RNS.Transport.detach_interfaces()
+        except Exception:  # pragma: no cover - shutdown best-effort
+            pass
         self.loop.call_soon_threadsafe(self.loop.stop)
+        try:
+            self._loop_thread.join(timeout=3)
+        except Exception:  # pragma: no cover
+            pass

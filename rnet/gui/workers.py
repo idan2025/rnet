@@ -32,8 +32,15 @@ def run_async(coro, loop: asyncio.AbstractEventLoop,
 
 
 def offload(func: Callable, *args, loop: Optional[asyncio.AbstractEventLoop] = None,
-            on_done: Optional[Callable[[Any], None]] = None, **kwargs) -> threading.Thread:
-    """Run a blocking sync ``func`` off the GUI thread; call ``on_done`` with result."""
+            on_done: Optional[Callable[[Any], None]] = None,
+            on_error: Optional[Callable[[BaseException], None]] = None,
+            **kwargs) -> threading.Thread:
+    """Run a blocking sync ``func`` off the GUI thread; call ``on_done`` with result.
+
+    If ``on_error`` is given it is invoked with the exception (and ``on_done``
+    is skipped) when ``func`` raises. Without ``on_error`` the exception is
+    passed to ``on_done`` as its argument, preserving the original behaviour.
+    """
     result = {}
 
     def _run():
@@ -43,14 +50,17 @@ def offload(func: Callable, *args, loop: Optional[asyncio.AbstractEventLoop] = N
             result["error"] = exc
 
     def _emit():
-        if "error" in result and on_done is not None:
-            on_done(result["error"])
+        if "error" in result:
+            if on_error is not None:
+                on_error(result["error"])
+            elif on_done is not None:
+                on_done(result["error"])
         elif on_done is not None:
             on_done(result.get("value"))
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    if on_done is not None:
+    if on_done is not None or on_error is not None:
         watcher = threading.Thread(target=lambda: (t.join(), _emit()), daemon=True)
         watcher.start()
     return t
