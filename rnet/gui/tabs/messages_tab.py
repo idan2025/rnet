@@ -90,7 +90,7 @@ class ConversationsTab(BaseTab):
         return node.node_dest_hash if node and node.running and node.node_dest_hash else ""
 
     def _refresh_convos(self) -> None:
-        QtWidgets, _, _ = qt()
+        QtWidgets, QtCore, _ = qt()
         self.convos.clear()
         our = self._our_dest()
         if not our:
@@ -147,6 +147,7 @@ class ConversationsTab(BaseTab):
 
     # -- chat view -------------------------------------------------------
     def _on_convo(self, item) -> None:
+        QtWidgets, QtCore, _ = qt()
         peer = item.data(QtCore.Qt.UserRole)
         if not peer:
             return

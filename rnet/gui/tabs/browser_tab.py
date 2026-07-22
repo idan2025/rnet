@@ -15,6 +15,7 @@ class BrowserTab(BaseTab):
         self._bw = None  # BrowserWidget, built on node start
         self.placeholder = QtWidgets.QLabel("Start the node to browse the mesh web.")
         v.addWidget(self.placeholder)
+        self._layout = v
 
     def on_node_started(self) -> None:
         QtWidgets, _, _ = qt()
@@ -30,6 +31,6 @@ class BrowserTab(BaseTab):
         model = BrowserModel(sdk.db, sdk.idm, web, sdk.naming)
         self._bw = BrowserWidget(model, self.controller.loop)
         # Swap placeholder for the browser widget.
-        v.removeWidget(self.placeholder)
+        self._layout.removeWidget(self.placeholder)
         self.placeholder.setParent(None)
-        v.addWidget(self._bw.widget, 1)
+        self._layout.addWidget(self._bw.widget, 1)

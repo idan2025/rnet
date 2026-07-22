@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rnet"
-version = "0.2.2"
+version = "0.2.3"
 description = "RNet — a decentralized internet layer on top of Reticulum (RNS)"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -62,7 +62,7 @@ class ContactsTab(BaseTab):
 
     # -- own identities -------------------------------------------------
     def _refresh(self) -> None:
-        QtWidgets, _, _ = qt()
+        QtWidgets, QtCore, _ = qt()
         rows = self.controller.list_own_identities()
         default = self.controller.default_identity_name()
         self.own_table.setRowCount(len(rows))
