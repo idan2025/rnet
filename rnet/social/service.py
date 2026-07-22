@@ -214,4 +214,8 @@ class SocialServiceEndpoint:
                 self.destination.deregister_request_handler("social")
             except Exception:  # pragma: no cover
                 pass
+            try:
+                RNS.Transport.deregister_destination(self.destination)
+            except Exception:  # pragma: no cover
+                pass
             self.destination = None

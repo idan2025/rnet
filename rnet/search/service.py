@@ -60,6 +60,10 @@ class SearchServiceEndpoint:
                 self.destination.deregister_request_handler("search")
             except Exception:  # pragma: no cover
                 pass
+            try:
+                RNS.Transport.deregister_destination(self.destination)
+            except Exception:  # pragma: no cover
+                pass
             self.destination = None
 
     async def query_local_async(self, q: SearchQuery) -> SearchResults:

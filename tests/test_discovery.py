@@ -127,3 +127,45 @@ async def test_node_start_announce_and_stop():
         finally:
             await node.stop()
         assert not node.running
+
+
+@pytest.mark.asyncio
+async def test_node_restart_reregisters_destination():
+    """restart() must deregister the old RNS destination before re-creating it.
+
+    Regression: stop() left the node's IN destination in RNS.Transport, so the
+    next start() raised "Attempt to register an already registered destination"
+    (same identity + rnet.node aspect = same hash) and crashed the app.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        rns_dir = os.path.join(tmp, "rns")
+        os.makedirs(rns_dir)
+        datadir = os.path.join(tmp, "data")
+        os.makedirs(datadir)
+        cfg = NodeConfig(
+            name="restart-node",
+            capabilities=["messaging", "relay"],
+            rns_configdir=rns_dir,
+            datadir=datadir,
+            announce_interval=100000,
+            low_power=False,
+            max_bandwidth=int(Bandwidth.MEDIUM),
+        )
+        db = Database(os.path.join(datadir, "rnet.db"))
+        idm = IdentityManager(IdentityStore(db), os.path.join(datadir, "keys"))
+        ident = idm.create("restart-node", is_node=True)
+        node = Node(cfg, ident, db, identity_manager=idm)
+        await node.start()
+        try:
+            dest_hash = node.node_dest_hash
+            assert dest_hash is not None
+            # Destination registered in RNS.Transport while running.
+            assert bytes.fromhex(dest_hash) in RNS.Transport.destinations_map
+            await node.restart()
+            # Same hash re-registered cleanly; no KeyError raised.
+            assert node.running
+            assert node.node_dest_hash == dest_hash
+            assert bytes.fromhex(dest_hash) in RNS.Transport.destinations_map
+        finally:
+            await node.stop()
+        assert not node.running

@@ -130,6 +130,11 @@ class MessagingService:
                 self.destination.deregister_request_handler("msg")
             except Exception:  # pragma: no cover
                 pass
+            try:
+                RNS.Transport.deregister_destination(self.destination)
+            except Exception:  # pragma: no cover
+                pass
+            self.destination = None
 
     async def _poll_loop(self) -> None:
         """Retry the outbox and expire the mailbox on a slow cadence."""

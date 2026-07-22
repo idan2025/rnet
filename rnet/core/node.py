@@ -199,6 +199,17 @@ class Node:
                 RNS.Transport.deregister_announce_handler(self._announce_handler)
             except Exception:  # pragma: no cover - shutdown best-effort
                 pass
+            self._announce_handler = None
+        # Deregister the node destination from RNS.Transport so a later
+        # restart can re-create it. RNS keys destinations by hash and raises
+        # "Attempt to register an already registered destination" on a second
+        # IN destination with the same hash (same identity + rnet.node aspect).
+        if self.destination is not None:
+            try:
+                RNS.Transport.deregister_destination(self.destination)
+            except Exception:  # pragma: no cover - shutdown best-effort
+                pass
+            self.destination = None
         self.bus.emit(NODE_STOPPED, {"name": self.config.name})
         # RNS.Reticulum has no public halt; it stops with the process.
 
