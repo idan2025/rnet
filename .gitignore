@@ -40,3 +40,5 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+# local test site scratch
+testsite/
