@@ -205,6 +205,55 @@ def test_interfaces_tab_refreshes_on_interface_changed(tmp_path, qapp):
     c.shutdown()
 
 
+def test_set_enable_transport_writes_config(tmp_path):
+    """set_enable_transport toggles enable_transport in the RNS config file,
+    creating the [reticulum] section / line if missing."""
+    from rnet.gui.rns_config import default_config_path, set_enable_transport, read_interfaces
+    path = default_config_path(str(tmp_path))
+    set_enable_transport(path, True)
+    with open(path) as f:
+        assert "enable_transport = True" in f.read()
+    set_enable_transport(path, False)
+    with open(path) as f:
+        assert "enable_transport = False" in f.read()
+    # Toggling must not corrupt the [interfaces] section parser.
+    assert read_interfaces(path) == []
+
+
+def test_controller_applies_transport_setting_before_rns_init(tmp_path, qapp):
+    """GuiController must write enable_transport from settings into the RNS
+    config before RNS initialises (so a relay-hub node actually relays)."""
+    from rnet.gui.controller import GuiController
+    from rnet.gui.bridge import make_bridge
+    from rnet.gui.settings_store import SettingsStore
+    import os
+    datadir = str(tmp_path)
+    SettingsStore(os.path.join(datadir, "settings.json")).set("enable_transport", True)
+    _ensure_rns()
+    c = GuiController(datadir=datadir, bridge=make_bridge())
+    with open(os.path.join(datadir, "reticulum", "config")) as f:
+        assert "enable_transport = True" in f.read()
+    c.shutdown()
+
+
+def test_set_node_name_renames_default_identity(tmp_path, qapp):
+    """set_node_name renames the default identity (keeps dest hash) and
+    persists it as default — the name peers see in announces."""
+    c, _b = _controller(str(tmp_path))
+    c.create_identity("default", is_node=True)
+    before = c.default_identity_name()
+    assert before == "default"
+    c.set_node_name("alice")
+    assert c.default_identity_name() == "alice"
+    assert any(r["name"] == "alice" for r in c.list_own_identities())
+    assert not any(r["name"] == "default" for r in c.list_own_identities())
+    # Switching to an existing name just changes default (no clobber).
+    c.create_identity("bob", is_node=True)
+    c.set_node_name("alice")
+    assert c.default_identity_name() == "alice"
+    c.shutdown()
+
+
 def test_browser_and_explorer_widgets_construct(tmp_path, qapp):
     from rnet.browser import BrowserModel
     from rnet.browser.view import BrowserWidget

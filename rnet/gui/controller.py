@@ -62,6 +62,18 @@ class GuiController:
         # Persistent GUI settings + cached start config.
         self.settings = SettingsStore(os.path.join(self.datadir, "settings.json"))
         self.web_root: Optional[str] = None
+        # Apply the transport (relay-hub) toggle to the RNS config before RNS
+        # initialises — enable_transport is read once at Reticulum init, so it
+        # must be set on disk first. With it on, this node forwards announces
+        # between its interfaces and can mesh rnet clients without a rnsd.
+        from rnet.gui.rns_config import default_config_path, set_enable_transport
+        try:
+            set_enable_transport(
+                default_config_path(self.rns_configdir),
+                bool(self.settings.get("enable_transport", False)),
+            )
+        except Exception as exc:  # pragma: no cover - don't crash GUI on config IO
+            log.warning("set_enable_transport failed: %s", exc)
         # RNS uses POSIX signals internally which only work on the main
         # thread of the main interpreter. The node starts on the asyncio
         # daemon thread, so pre-build RNS.Reticulum here (main thread) —
@@ -373,6 +385,32 @@ class GuiController:
     def set_default_identity(self, name: str) -> None:
         self.idm.set_default(name)
         self.settings.set("default_identity", name)
+
+    def set_node_name(self, name: str) -> None:
+        """Set the name this node announces under.
+
+        Renames the current default identity to ``name`` (keeping its keys and
+        destination hash, so contacts/address don't change) and persists it as
+        the default. If an identity named ``name`` already exists, switches the
+        default to it instead of clobbering. Applies on the next node start.
+        """
+        name = (name or "").strip()
+        if not name:
+            return
+        current = self.default_identity_name()
+        if name == current:
+            return
+        # If the desired name is already a different identity, just switch.
+        if any(r["name"] == name for r in self.list_own_identities()):
+            self.set_default_identity(name)
+            return
+        if current is None:
+            # No identity yet: create one with the requested name.
+            self.create_identity(name, is_node=True)
+            self.set_default_identity(name)
+            return
+        self.idm.rename_own(current, name)
+        self.set_default_identity(name)
 
     def default_identity_name(self) -> Optional[str]:
         name = self.settings.get("default_identity")

@@ -37,6 +37,13 @@ class SettingsTab(BaseTab):
         nl = QtWidgets.QVBoxLayout(node_card)
         nl.addWidget(SectionLabel("Node"))
         row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Node name:"))
+        self.name_edit = QtWidgets.QLineEdit()
+        self.name_edit.setPlaceholderText("the name other peers see")
+        self.name_edit.setText(self.controller.default_identity_name() or "")
+        row.addWidget(self.name_edit, 1)
+        nl.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("Default identity:"))
         self.id_box = QtWidgets.QComboBox()
         for r in self.controller.list_own_identities():
@@ -72,6 +79,17 @@ class SettingsTab(BaseTab):
         self.ann_spin.setRange(10, 86400)
         self.ann_spin.setValue(float(self.controller.settings.get("announce_interval", 120)))
         row.addWidget(self.ann_spin)
+        nl.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        self.transport_cb = QtWidgets.QCheckBox(
+            "relay mode (enable RNS transport — mesh other clients through this node)")
+        self.transport_cb.setChecked(bool(self.controller.settings.get("enable_transport", False)))
+        self.transport_cb.setToolTip(
+            "When on, this node forwards announces between its interfaces so\n"
+            "rnet clients peering through it discover each other — equivalent\n"
+            "to running a separate rnsd. Off = plain client. Requires restart.")
+        row.addWidget(self.transport_cb)
+        row.addStretch(1)
         nl.addLayout(row)
         root.addWidget(node_card)
 
@@ -143,6 +161,16 @@ class SettingsTab(BaseTab):
     def _save(self) -> None:
         s = self.controller.settings
         s.set("theme", self.theme_box.currentText())
+        # Node name: rename the default identity (keeps keys/dest) so the
+        # chosen name is what peers see in announces. Applies on next start.
+        new_name = self.name_edit.text().strip()
+        name_changed = False
+        if new_name and new_name != self.controller.default_identity_name():
+            try:
+                self.controller.set_node_name(new_name)
+                name_changed = True
+            except Exception as exc:
+                warn(self.widget, "rename failed", str(exc))
         default = self.id_box.currentText().strip()
         if default:
             try:
@@ -155,6 +183,8 @@ class SettingsTab(BaseTab):
         s.set("low_power", self.low_power.isChecked())
         s.set("max_bandwidth", self.bw_box.currentText())
         s.set("announce_interval", float(self.ann_spin.value()))
+        transport_changed = self.transport_cb.isChecked() != bool(s.get("enable_transport", False))
+        s.set("enable_transport", self.transport_cb.isChecked())
         s.set("download_dir", self.dl_dir.text().strip())
         # Apply theme live.
         try:
@@ -165,7 +195,10 @@ class SettingsTab(BaseTab):
                 self.bridge.theme_changed.emit(self.theme_box.currentText())
         except Exception:
             pass
-        Toast.show_in(self.widget.window().statusBar(), "settings saved", 2500)
+        msg = "settings saved — restart Reticulum to apply node name" if name_changed else "settings saved"
+        if transport_changed:
+            msg = "settings saved — restart Reticulum to apply relay mode"
+        Toast.show_in(self.widget.window().statusBar(), msg, 2500)
 
     def _restart(self) -> None:
         self.controller.restart_node(

@@ -54,6 +54,48 @@ def _ensure_file(path: str) -> None:
             f.write("[reticulum]\nenable_transport = False\n\n[interfaces]\n")
 
 
+def set_enable_transport(path: str, enabled: bool) -> None:
+    """Set ``enable_transport`` in the ``[reticulum]`` section of the config.
+
+    With transport on, the RNS instance forwards announces (and routes
+    traffic) between its interfaces — i.e. the node acts as a mesh relay so
+    rnet clients peering through it discover each other without a separate
+    rnsd. Off (default) = plain client that only announces + links. Must be
+    called before ``RNS.Reticulum(configdir)`` since transport is read at init.
+    """
+    _ensure_file(path)
+    out: List[str] = []
+    seen = False
+    in_reticulum = False
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            s = line.strip()
+            if s.startswith("[") and not s.startswith("[["):
+                in_reticulum = (s == "[reticulum]")
+                out.append(raw)
+                continue
+            if in_reticulum and s.startswith("enable_transport"):
+                out.append(f"enable_transport = {'True' if enabled else 'False'}")
+                seen = True
+                continue
+            out.append(raw)
+    if not seen:
+        # Insert at the top of the file (before any [interfaces] etc.) so it
+        # lands inside [reticulum] when that section exists, or creates one.
+        head = f"[reticulum]\nenable_transport = {'True' if enabled else 'False'}\n"
+        # If [reticulum] already present but had no enable_transport line, slip
+        # it right after the header; else prepend a section.
+        for i, raw in enumerate(out):
+            if raw.strip() == "[reticulum]":
+                out.insert(i + 1, f"enable_transport = {'True' if enabled else 'False'}\n")
+                break
+        else:
+            out.insert(0, head)
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(out)
+
+
 def read_interfaces(path: str) -> List[Dict[str, Any]]:
     """Return a list of ``{name, type, options}`` dicts for each interface."""
     _ensure_file(path)

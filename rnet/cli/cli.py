@@ -108,6 +108,11 @@ async def _run_node(args) -> int:
         announce_interval=args.announce_interval,
         ratchets_path=args.ratchets_path,
     )
+    # Apply the transport toggle to the RNS config before Node.start creates
+    # the Reticulum instance (enable_transport is read once at init).
+    if args.transport:
+        from rnet.gui.rns_config import default_config_path, set_enable_transport
+        set_enable_transport(default_config_path(cfg.rns_configdir), True)
     bus = EventBus()
     node = Node(cfg, ident, db, bus=bus, identity_manager=idm)
 
@@ -580,6 +585,10 @@ def build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--announce-interval", type=float, default=120.0)
     ns.add_argument("--ratchets-path", default=None,
                     help="enable ratcheted messaging (forward secrecy); path for ratchet state")
+    ns.add_argument("--transport", action="store_true",
+                    help="enable RNS transport — relay/mesh hub that forwards announces "
+                         "between interfaces so rnet clients peering through this node "
+                         "discover each other (no separate rnsd needed)")
     ns.set_defaults(func=cmd_node_start)
     npe = nsub.add_parser("peers", help="list discovered peers")
     npe.set_defaults(func=cmd_node_peers)
