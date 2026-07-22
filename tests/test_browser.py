@@ -82,6 +82,45 @@ def test_navigate_resolves_fetches_verifies_caches():
         assert any(h["url"] == "rhttp://library.rns" for h in model.history())
 
 
+def test_normalize_url_dest_hash():
+    # A 32-hex dest hash (16-byte RNS destination) is NOT a .rns name.
+    d = "556687be305553bcc5fa0d5169b286fe"
+    assert BrowserModel.normalize_url(d) == f"rhttp://{d}/"
+    assert BrowserModel.normalize_url(d + "/about.html") == f"rhttp://{d}/about.html"
+    assert BrowserModel.normalize_url("rhttp://" + d + "/") == f"rhttp://{d}/"
+
+
+def test_navigate_by_dest_hash_skips_naming():
+    """rhttp://<dest-hash>/ fetches directly without a published .rns name."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db, idm, ident, store, ms, naming = _setup(tmp)
+        host_dest = RNS.Destination.hash(ident, "rnet", "node").hex()
+        root = os.path.join(tmp, "site")
+        os.makedirs(root)
+        with open(os.path.join(root, "index.html"), "w") as f:
+            f.write("<html><head><title>Hashed</title></head>"
+                    "<body>dest-hash host</body></html>")
+        srv = RHTTPServer(root, ident, store, ms)
+        transport = FakeWebTransport()
+        transport.register(host_dest, srv.handle_request)
+        # Client knows the host pubkey (as it would after receiving an announce).
+        cidm = IdentityManager(IdentityStore(Database(os.path.join(tmp, "cdb.db"))),
+                               os.path.join(tmp, "ck"))
+        cidm.store.upsert_known(host_dest, fingerprint(ident), ident.get_public_key(),
+                                "hashed", True)
+        web = WebClient(transport, ContentStore(Database(os.path.join(tmp, "cdb.db")),
+                                                os.path.join(tmp, "ccas")),
+                        ManifestStore(Database(os.path.join(tmp, "cdb.db"))), cidm)
+        model = BrowserModel(Database(os.path.join(tmp, "cdb.db")), cidm, web,
+                             NamingService(NameRegistry(Database(os.path.join(tmp, "cdb.db"))), cidm))
+        page = asyncio.run(model.navigate(f"rhttp://{host_dest}/"))
+        assert page.error == ""
+        assert page.status == OK
+        assert "dest-hash host" in page.html
+        assert page.verified is True
+        assert page.title == "Hashed"
+
+
 def test_navigate_unresolvable_name():
     with tempfile.TemporaryDirectory() as tmp:
         db, idm, ident, store, ms, naming = _setup(tmp)

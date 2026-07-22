@@ -28,7 +28,8 @@ class BrowserTab(BaseTab):
         from rnet.browser.view import BrowserWidget
         from rnet.web import WebClient, RNSWebTransport
         web = WebClient(RNSWebTransport(), sdk.content_store, sdk.manifest_store, sdk.idm)
-        model = BrowserModel(sdk.db, sdk.idm, web, sdk.naming)
+        model = BrowserModel(sdk.db, sdk.idm, web, sdk.naming,
+                             peer_registry=getattr(sdk, "registry", None))
         self._bw = BrowserWidget(model, self.controller.loop)
         # Swap placeholder for the browser widget.
         self._layout.removeWidget(self.placeholder)

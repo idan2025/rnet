@@ -44,15 +44,36 @@ class BrowserModel:
 
     def __init__(self, db: Database, idm: IdentityManager,
                  web_client, naming: NamingService,
-                 name_sources: Optional[List[NameSource]] = None):
+                 name_sources: Optional[List[NameSource]] = None,
+                 peer_registry=None):
         self.db = db
         self.idm = idm
         self.web = web_client
         self.naming = naming
         self.name_sources = name_sources or []
+        # Optional PeerRegistry used to discover naming-capable peers at
+        # navigate time, so cross-node name resolution works without a static
+        # source list (the GUI browser passes this so rhttp://name.rns/ URLs
+        # resolve by querying any discovered naming peer).
+        self.peer_registry = peer_registry
         # In-memory back/forward stack for the current session.
         self._back: List[str] = []
         self._fwd: List[str] = []
+
+    def _resolve_name_sources(self) -> List[NameSource]:
+        """Static sources plus one RNSNameSource per discovered naming peer."""
+        sources = list(self.name_sources)
+        if self.peer_registry is not None:
+            from rnet.naming import RNSNameSource
+            try:
+                peers = self.peer_registry.list_by_capability("naming")
+            except Exception:
+                peers = []
+            for p in peers:
+                dest = p.get("dest_hash")
+                if dest:
+                    sources.append(RNSNameSource(dest))
+        return sources
 
     # -- URL normalization ------------------------------------------------
     @classmethod
@@ -65,7 +86,12 @@ class BrowserModel:
         # bare name or name/path
         if "/" in s:
             name, _, path = s.partition("/")
+            # A 64-hex-char host is a dest hash, not a .rns name — don't append .rns.
+            if len(name) == 32 and all(c in "0123456789abcdefABCDEF" for c in name):
+                return f"{cls.SCHEME}{name}/{path}"
             return f"{cls.SCHEME}{name}.rns/{path}" if "." not in name else f"{cls.SCHEME}{s}"
+        if len(s) == 32 and all(c in "0123456789abcdefABCDEF" for c in s):
+            return f"{cls.SCHEME}{s}/"
         return f"{cls.SCHEME}{s}.rns" if ".rns" not in s else f"{cls.SCHEME}{s}"
 
     @staticmethod
@@ -145,8 +171,32 @@ class BrowserModel:
                 self._push_history(url)
                 return cached
         host_name, path = self.split_url(url)
+        # Direct dest-hash URL: rhttp://<64-hex-dest-hash>/path skips naming
+        # entirely and fetches straight from that destination. Lets users
+        # browse a known host (e.g. a discovered web peer) without a published
+        # .rns name or a naming server.
+        stripped = host_name.split(".")[0] if host_name.endswith(".rns") else host_name
+        if len(stripped) == 32 and all(c in "0123456789abcdefABCDEF" for c in stripped):
+            web_dest = stripped
+            host_row = self.idm.store.get_known(stripped)
+            host_pubkey = bytes(host_row["pubkey"]) if host_row and host_row["pubkey"] else None
+            resp = await self.web.get(web_dest, path, host_pubkey=host_pubkey)
+            if resp is None:
+                return Page(url=url, host=host_name, error="response signature invalid",
+                            status=0)
+            html = resp.body.decode("utf-8", errors="replace") if resp.body else ""
+            from rnet.search.crawler import parse_html
+            title, _text, _links = parse_html(html, base_url=url)
+            page = Page(url=url, final_url=url, title=title, html=html,
+                        status=int(getattr(resp, "status", 200)),
+                        verified=bool(host_pubkey is not None) and resp.verify_pubkey(host_pubkey) if host_pubkey else False,
+                        host=host_name,
+                        content_hash=getattr(resp, "content_hash", b"") or b"")
+            self._cache_put(url, page)
+            self._push_history(url)
+            return page
         # Resolve the name to a host dest hash.
-        record = await self.naming.resolve_name(host_name, sources=self.name_sources)
+        record = await self.naming.resolve_name(host_name, sources=self._resolve_name_sources())
         if record is None:
             return Page(url=url, error=f"could not resolve {host_name}", status=0)
         # Find the web service dest hash for the resolved owner.
