@@ -98,10 +98,15 @@ async def _run_node(args) -> int:
     caps = [c.strip() for c in (args.capabilities or "").split(",") if c.strip()]
     if not caps:
         caps = ["messaging", "relay"]
+    # Default the RNS config dir to <datadir>/reticulum so the CLI node shares
+    # the same interfaces as the GUI (which writes ~/.rnet/reticulum/config).
+    # Without this the CLI fell back to RNS's own ~/.reticulum and never saw
+    # GUI-added interfaces like the tcp-peer -> rnsd link.
+    rns_configdir = args.rns_configdir or os.path.join(args.datadir, "reticulum")
     cfg = NodeConfig(
         name=args.name,
         capabilities=caps,
-        rns_configdir=args.rns_configdir,
+        rns_configdir=rns_configdir,
         datadir=args.datadir,
         low_power=args.low_power,
         max_bandwidth=_parse_bandwidth(args.max_bandwidth),
@@ -247,10 +252,12 @@ async def _run_node_with_web(args):
     idm = _idm(args, db)
     ident = _load_or_create_node_identity(args, idm)
     caps = [c.strip() for c in (args.capabilities or "").split(",") if c.strip()]
+    # Share the GUI's RNS config dir by default (see _run_node).
+    rns_configdir = args.rns_configdir or os.path.join(args.datadir, "reticulum")
     cfg = NodeConfig(
         name=args.name,
         capabilities=caps,
-        rns_configdir=args.rns_configdir,
+        rns_configdir=rns_configdir,
         datadir=args.datadir,
         low_power=args.low_power,
         max_bandwidth=_parse_bandwidth(args.max_bandwidth),
