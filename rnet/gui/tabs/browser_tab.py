@@ -27,7 +27,18 @@ class BrowserTab(BaseTab):
         from rnet.browser import BrowserModel
         from rnet.browser.view import BrowserWidget
         from rnet.web import WebClient, RNSWebTransport
-        web = WebClient(RNSWebTransport(), sdk.content_store, sdk.manifest_store, sdk.idm)
+
+        def _pubkey_lookup(dest_hash):
+            # Fall back to RNet's known_identities (populated by the announce
+            # handler) when RNS.Identity.recall has no entry for this host.
+            try:
+                row = sdk.idm.store.get_known(dest_hash)
+                return bytes(row["pubkey"]) if row and row["pubkey"] else None
+            except Exception:
+                return None
+
+        web = WebClient(RNSWebTransport(pubkey_lookup=_pubkey_lookup),
+                        sdk.content_store, sdk.manifest_store, sdk.idm)
         model = BrowserModel(sdk.db, sdk.idm, web, sdk.naming,
                              peer_registry=getattr(sdk, "registry", None))
         self._bw = BrowserWidget(model, self.controller.loop)

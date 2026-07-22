@@ -383,7 +383,15 @@ def cmd_browse(args) -> int:
     naming = NamingService(NameRegistry(db), idm)
     store = ContentStore(db, os.path.join(args.datadir, "cas"))
     ms = ManifestStore(db)
-    web = WebClient(RNSWebTransport(), store, ms, idm)
+
+    def _pubkey_lookup(dest_hash):
+        try:
+            row = idm.store.get_known(dest_hash)
+            return bytes(row["pubkey"]) if row and row["pubkey"] else None
+        except Exception:
+            return None
+
+    web = WebClient(RNSWebTransport(pubkey_lookup=_pubkey_lookup), store, ms, idm)
     model = BrowserModel(db, idm, web, naming)
     if args.url:
         # Pre-seed URL bar by navigating once after launch is GUI-driven; we
